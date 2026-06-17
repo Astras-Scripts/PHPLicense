@@ -16,6 +16,29 @@ $devApprovalAffectedRows = 0;
 $devRequestExpireAffectedRows = 0;
 $devHeartbeatAffectedRows = 0;
 
+function hasColumn($conn, $tableName, $columnName) {
+    $stmt = $conn->prepare("
+        SELECT 1
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+        AND COLUMN_NAME = ?
+        LIMIT 1
+    ");
+
+    if (!$stmt) {
+        return false;
+    }
+
+    $stmt->bind_param("ss", $tableName, $columnName);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $exists = (bool)$result->fetch_row();
+    $stmt->close();
+
+    return $exists;
+}
+
 if ($secret !== $cleanupSecret) {
     echo json_encode([
         "success" => false,
@@ -52,67 +75,80 @@ try {
     $licenseAffectedRows = $stmt->affected_rows;
     $stmt->close();
 
-    $devApprovalStmt = $conn->prepare("
-        UPDATE scriptforge_dev_approvals
-        SET status = 'expired'
-        WHERE status = 'active'
-        AND expires_at IS NOT NULL
-        AND expires_at <= NOW()
-    ");
+    $hasDevApprovalsTable = hasColumn($conn, 'scriptforge_dev_approvals', 'status')
+        && hasColumn($conn, 'scriptforge_dev_approvals', 'expires_at')
+        && hasColumn($conn, 'scriptforge_dev_approvals', 'token');
 
-    if ($devApprovalStmt) {
-        if ($devApprovalStmt->execute()) {
-            $devApprovalAffectedRows = $devApprovalStmt->affected_rows;
+    $hasDevRequestsTable = hasColumn($conn, 'scriptforge_dev_requests', 'status')
+        && hasColumn($conn, 'scriptforge_dev_requests', 'heartbeat_status')
+        && hasColumn($conn, 'scriptforge_dev_requests', 'last_seen')
+        && hasColumn($conn, 'scriptforge_dev_requests', 'token');
+
+    if ($hasDevApprovalsTable && $hasDevRequestsTable) {
+        $devApprovalStmt = $conn->prepare("
+            UPDATE scriptforge_dev_approvals
+            SET status = 'expired'
+            WHERE status = 'active'
+            AND expires_at IS NOT NULL
+            AND expires_at <= NOW()
+        ");
+
+        if ($devApprovalStmt) {
+            if ($devApprovalStmt->execute()) {
+                $devApprovalAffectedRows = $devApprovalStmt->affected_rows;
+            } else {
+                error_log("ScriptForge DEV cleanup skipped (dev_approvals): " . $devApprovalStmt->error);
+            }
+            $devApprovalStmt->close();
         } else {
-            error_log("ScriptForge DEV cleanup skipped (dev_approvals): " . $devApprovalStmt->error);
+            error_log("ScriptForge DEV cleanup skipped (dev_approvals prepare): " . $conn->error);
         }
-        $devApprovalStmt->close();
-    } else {
-        error_log("ScriptForge DEV cleanup skipped (dev_approvals prepare): " . $conn->error);
-    }
 
-    $devRequestExpireStmt = $conn->prepare("
-        UPDATE scriptforge_dev_requests r
-        LEFT JOIN scriptforge_dev_approvals a
-            ON a.token = r.token
-            AND a.status = 'active'
-            AND a.expires_at > NOW()
-        SET r.status = 'expired',
-            r.heartbeat_status = 'inactive'
-        WHERE r.status = 'approved'
-        AND a.id IS NULL
-    ");
+        $devRequestExpireStmt = $conn->prepare("
+            UPDATE scriptforge_dev_requests r
+            LEFT JOIN scriptforge_dev_approvals a
+                ON a.token = r.token
+                AND a.status = 'active'
+                AND a.expires_at > NOW()
+            SET r.status = 'expired',
+                r.heartbeat_status = 'inactive'
+            WHERE r.status = 'approved'
+            AND a.id IS NULL
+        ");
 
-    if ($devRequestExpireStmt) {
-        if ($devRequestExpireStmt->execute()) {
-            $devRequestExpireAffectedRows = $devRequestExpireStmt->affected_rows;
+        if ($devRequestExpireStmt) {
+            if ($devRequestExpireStmt->execute()) {
+                $devRequestExpireAffectedRows = $devRequestExpireStmt->affected_rows;
+            } else {
+                error_log("ScriptForge DEV cleanup skipped (dev_requests expire): " . $devRequestExpireStmt->error);
+            }
+            $devRequestExpireStmt->close();
         } else {
-            error_log("ScriptForge DEV cleanup skipped (dev_requests expire): " . $devRequestExpireStmt->error);
+            error_log("ScriptForge DEV cleanup skipped (dev_requests expire prepare): " . $conn->error);
         }
-        $devRequestExpireStmt->close();
-    } else {
-        error_log("ScriptForge DEV cleanup skipped (dev_requests expire prepare): " . $conn->error);
-    }
 
-    $devHeartbeatStmt = $conn->prepare("
-        UPDATE scriptforge_dev_requests
-        SET heartbeat_status = 'inactive'
-        WHERE heartbeat_status = 'active'
-        AND (
-            last_seen IS NULL
-            OR last_seen < (NOW() - INTERVAL 5 MINUTE)
-        )
-    ");
+        $devHeartbeatStmt = $conn->prepare("
+            UPDATE scriptforge_dev_requests
+            SET heartbeat_status = 'inactive'
+            WHERE heartbeat_status = 'active'
+            AND (
+                last_seen IS NULL
+                OR last_seen < (NOW() - INTERVAL 5 MINUTE)
+            )
+        ");
 
-    if ($devHeartbeatStmt) {
-        if ($devHeartbeatStmt->execute()) {
-            $devHeartbeatAffectedRows = $devHeartbeatStmt->affected_rows;
+        if ($devHeartbeatStmt) {
+            if ($devHeartbeatStmt->execute()) {
+                $devHeartbeatAffectedRows = $devHeartbeatStmt->affected_rows;
+            } else {
+                error_log("ScriptForge DEV cleanup skipped (dev_heartbeats): " . $devHeartbeatStmt->error);
+            }
+            $devHeartbeatStmt->close();
         } else {
-            error_log("ScriptForge DEV cleanup skipped (dev_heartbeats): " . $devHeartbeatStmt->error);
+            error_log("ScriptForge DEV cleanup skipped (dev_heartbeats prepare): " . $conn->error);
         }
-        $devHeartbeatStmt->close();
     } else {
-        error_log("ScriptForge DEV cleanup skipped (dev_heartbeats prepare): " . $conn->error);
+        error_log("ScriptForge DEV cleanup skipped: dev schema incomplete.");
     }
 
     echo json_encode([
