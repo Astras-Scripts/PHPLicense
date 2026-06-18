@@ -562,7 +562,7 @@ if ($licenseResult->num_rows === 0) {
 
     sendDiscordWebhook(
         $defaultWebhookUrl,
-        'âš ï¸ Neue Lizenzanfrage',
+        'âš ï¸ Neue Lizenzanfrage'
         '**Lizenz:** ' . $license .
         "\n**Produkt:** " . $script .
         "\n**Resource:** " . $resource .
@@ -575,7 +575,7 @@ if ($licenseResult->num_rows === 0) {
 
     respondJson([
         'notice' => 'license_pending',
-        'message' => 'Lizenz nicht hinterlegt. TemporÃ¤re Aktivierung erstellt.',
+        'message' => 'Lizenz nicht hinterlegt. TemporÃ¤re Aktivierung erstellt.'
         'script' => $script,
         'resource' => $resource,
         'version' => $product['latest_version'],
@@ -691,7 +691,7 @@ if ($licenseData['status'] === 'pending') {
 
         sendDiscordWebhook(
             !empty($licenseData['webhook_url']) ? $licenseData['webhook_url'] : $defaultWebhookUrl,
-            'â° Pending Lizenz abgelaufen',
+            'â° Pending Lizenz abgelaufen'
             '**Lizenz:** ' . $license .
             "\n**Produkt:** " . $script .
             "\n**Resource:** " . ($licenseData['resource_name'] ?? $resource) .
@@ -721,7 +721,7 @@ if ($licenseData['status'] === 'trial') {
 
         sendDiscordWebhook(
             !empty($licenseData['webhook_url']) ? $licenseData['webhook_url'] : $defaultWebhookUrl,
-            'â° Trial Lizenz abgelaufen',
+            'â° Trial Lizenz abgelaufen'
             '**Lizenz:** ' . $license .
             "\n**Produkt:** " . $script .
             "\n**Resource:** " . ($licenseData['resource_name'] ?? $resource) .
