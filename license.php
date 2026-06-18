@@ -213,7 +213,7 @@ function sendDiscordWebhook(?string $webhookUrl, string $title, string $message,
 
 function getReusableDevRequest(mysqli $conn, string $serverIP, string $resource): ?array
 {
-    $stmt = $conn->prepare("\n        SELECT *\n        FROM scriptforge_dev_requests\n        WHERE server_ip = ?\n        AND resource_name = ?\n        AND status IN ('pending', 'approved', 'denied', 'revoked', 'expired')\n        ORDER BY id DESC\n        LIMIT 1\n    ");
+    $stmt = $conn->prepare("\n        SELECT *\n        FROM scriptforge_dev_requests\n        WHERE server_ip = ?\n        AND resource_name = ?\n        AND status IN ('pending', 'approved', 'denied', 'revoked')\n        ORDER BY id DESC\n        LIMIT 1\n    ");
 
     if (!$stmt) {
         error_log('ScriptForge DEV reusable prepare failed: ' . $conn->error);
@@ -561,20 +561,20 @@ if ($licenseResult->num_rows === 0) {
 
     sendDiscordWebhook(
         $defaultWebhookUrl,
-        '⚠️ Neue Lizenzanfrage',
+        'âš ï¸ Neue Lizenzanfrage',
         '**Lizenz:** ' . $license .
         "\n**Produkt:** " . $script .
         "\n**Resource:** " . $resource .
         "\n**IP:** " . $serverIP .
         "\n**Server:** " . ($serverName ?: 'Unbekannt') .
         "\n\n**Status:** PENDING" .
-        "\n**Gültig bis:** " . $pendingUntil,
+        "\n**GÃ¼ltig bis:** " . $pendingUntil,
         16753920
     );
 
     respondJson([
         'notice' => 'license_pending',
-        'message' => 'Lizenz nicht hinterlegt. Temporäre Aktivierung erstellt.',
+        'message' => 'Lizenz nicht hinterlegt. TemporÃ¤re Aktivierung erstellt.',
         'script' => $script,
         'resource' => $resource,
         'version' => $product['latest_version'],
@@ -690,7 +690,7 @@ if ($licenseData['status'] === 'pending') {
 
         sendDiscordWebhook(
             !empty($licenseData['webhook_url']) ? $licenseData['webhook_url'] : $defaultWebhookUrl,
-            '⏰ Pending Lizenz abgelaufen',
+            'â° Pending Lizenz abgelaufen',
             '**Lizenz:** ' . $license .
             "\n**Produkt:** " . $script .
             "\n**Resource:** " . ($licenseData['resource_name'] ?? $resource) .
@@ -720,7 +720,7 @@ if ($licenseData['status'] === 'trial') {
 
         sendDiscordWebhook(
             !empty($licenseData['webhook_url']) ? $licenseData['webhook_url'] : $defaultWebhookUrl,
-            '⏰ Trial Lizenz abgelaufen',
+            'â° Trial Lizenz abgelaufen',
             '**Lizenz:** ' . $license .
             "\n**Produkt:** " . $script .
             "\n**Resource:** " . ($licenseData['resource_name'] ?? $resource) .
