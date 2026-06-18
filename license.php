@@ -21,7 +21,6 @@ $devModeValue = strtolower(trim($_GET['devmode'] ?? $_GET['dev_mode'] ?? ''));
 $devMode = in_array($devModeValue, ['1', 'true', 'yes', 'on'], true);
 
 $placeholderKeys = [
-    '',
     'DEINE-LIZENZ',
     'YOUR_LICENSE_KEY',
     'PUT_IN_YOUR_TBX_KEY'
