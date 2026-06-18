@@ -344,6 +344,105 @@ if (!$product = $productResult->fetch_assoc()) {
     exit;
 }
 
+if (isPlaceholderLicenseKey($license, $placeholderKeys)) {
+    $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
+
+    if (!$devRequest) {
+        $devRequest = createDevRequest(
+            $conn,
+            $serverIP,
+            $serverName,
+            $resource,
+            $script,
+            (int)$product['id'],
+            $license
+        );
+
+        sendDiscordWebhook(
+            $defaultWebhookUrl,
+            "Neue DEV Anfrage",
+            "**Token:** " . $devRequest['token'] .
+            "\n**Produkt:** " . $script .
+            "\n**Resource:** " . $resource .
+            "\n**IP:** " . $serverIP .
+            "\n**Server:** " . ($serverName ?: "Unbekannt") .
+            "\n\n**Status:** PENDING" .
+            "\n**Hinweis:** Standard-Key erkannt, DEV Request angelegt.",
+            16753920
+        );
+    }
+
+    if ($devRequest['status'] === 'denied' || $devRequest['status'] === 'revoked') {
+        updateDevHeartbeat($conn, (int)$devRequest['id'], '');
+
+        echo json_encode([
+            "script" => $script,
+            "resource" => $resource,
+            "version" => $product['latest_version'],
+            "changelog" => $product['changelog'],
+            "status" => $product['status'],
+            "license_valid" => false,
+            "license_status" => $devRequest['status'] === 'denied' ? "dev_denied" : "dev_revoked",
+            "dev_mode" => true,
+            "dev_request_token" => $devRequest['token'],
+            "server_ip" => $serverIP,
+            "ip_lock" => false
+        ]);
+
+        exit;
+    }
+
+    $activeApproval = getActiveDevApproval(
+        $conn,
+        $devRequest['token'],
+        $serverIP,
+        $resource
+    );
+
+    if ($activeApproval) {
+        updateDevHeartbeat($conn, (int)$devRequest['id'], $heartbeat);
+
+        echo json_encode([
+            "script" => $script,
+            "resource" => $resource,
+            "version" => $product['latest_version'],
+            "changelog" => $product['changelog'],
+            "status" => $product['status'],
+            "license_valid" => true,
+            "license_status" => "dev_approved",
+            "dev_mode" => true,
+            "dev_request_token" => $devRequest['token'],
+            "dev_approval_expires_at" => $activeApproval['expires_at'],
+            "log_success" => false,
+            "log_failed" => true,
+            "webhook_url" => null,
+            "server_ip" => $serverIP,
+            "ip_lock" => false
+        ]);
+
+        exit;
+    }
+
+    updateDevHeartbeat($conn, (int)$devRequest['id'], '');
+
+    echo json_encode([
+        "script" => $script,
+        "resource" => $resource,
+        "version" => $product['latest_version'],
+        "changelog" => $product['changelog'],
+        "status" => $product['status'],
+        "license_valid" => false,
+        "license_status" => "dev_pending",
+        "dev_mode" => true,
+        "dev_request_token" => $devRequest['token'],
+        "message" => "DEV request is waiting for Discord approval.",
+        "server_ip" => $serverIP,
+        "ip_lock" => false
+    ]);
+
+    exit;
+}
+
 /*
     WICHTIG:
     Lizenz wird pro Kombination geprüft:
