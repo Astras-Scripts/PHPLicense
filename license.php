@@ -349,7 +349,7 @@ $licenseData = null;
 
 // Lizenz nicht vorhanden
 if ($licenseResult->num_rows === 0) {
-    if (isPlaceholderLicenseKey($license, $placeholderKeys)) {
+    if (!$devMode && isPlaceholderLicenseKey($license, $placeholderKeys)) {
         echo json_encode([
             "error" => "placeholder_license_key",
             "message" => "Placeholder license keys do not create pending entries.",
@@ -363,10 +363,7 @@ if ($licenseResult->num_rows === 0) {
     }
 
     if ($devMode) {
-        $devServer = getActiveDevServer($conn, $serverIP);
-
-        if ($devServer) {
-            $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
+        $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
 
             if (!$devRequest) {
                 $devRequest = createDevRequest(
@@ -462,7 +459,6 @@ if ($licenseResult->num_rows === 0) {
             ]);
 
             exit;
-        }
     }
 
     $pendingUntil = date('Y-m-d H:i:s', strtotime('+24 hours'));
