@@ -89,9 +89,6 @@ $resource = trim($_GET['resource'] ?? $script);
 $clientVersion = trim($_GET['version'] ?? '');
 $serverIP = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
 $serverName = trim($_GET['servername'] ?? '');
-$devModeValue = strtolower(trim($_GET['devmode'] ?? $_GET['dev_mode'] ?? ''));
-$devMode = in_array($devModeValue, ['1', 'true', 'yes', 'on'], true);
-
 if ($serverName === '' || strtolower($serverName) === 'unknown server') {
     $serverName = null;
 }
@@ -114,6 +111,24 @@ if ($resource === '') {
 function isPlaceholderLicenseKey(string $license, array $placeholderKeys): bool
 {
     return in_array(trim($license), $placeholderKeys, true);
+}
+
+function isAllowedDevServerIp(mysqli $conn, string $serverIP): bool
+{
+    $stmt = $conn->prepare("\n        SELECT 1\n        FROM scriptforge_dev_servers\n        WHERE server_ip = ?\n        AND active = 1\n        LIMIT 1\n    ");
+
+    if (!$stmt) {
+        error_log('ScriptForge DEV server lookup failed: ' . $conn->error);
+        return false;
+    }
+
+    $stmt->bind_param('s', $serverIP);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $allowed = $result && $result->num_rows > 0;
+    $stmt->close();
+
+    return $allowed;
 }
 
 function createDevRequestToken(): string
@@ -425,6 +440,17 @@ if (!$product) {
 // ===============================
 
 if (isPlaceholderLicenseKey($license, $placeholderKeys)) {
+    $devServerAllowed = isAllowedDevServerIp($conn, $serverIP);
+
+    if (!$devServerAllowed) {
+        respondJson([
+            'error' => 'missing_license',
+            'license_valid' => false,
+            'license_status' => 'missing_license',
+            'server_ip' => $serverIP
+        ], 403);
+    }
+
     $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
 
     if (!$devRequest) {
@@ -497,46 +523,6 @@ $licenseData = null;
 
 if ($licenseResult->num_rows === 0) {
     $licenseStmt->close();
-
-    if ($devMode) {
-        $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
-
-        if (!$devRequest) {
-            $devRequest = createDevRequest(
-                $conn,
-                $serverIP,
-                $serverName,
-                $resource,
-                $script,
-                $clientVersion,
-                $license,
-                'license_not_found'
-            );
-
-            if ($devRequest) {
-                $token = $devRequest['request_token'] ?? '';
-
-                sendDiscordWebhook(
-                    $defaultWebhookUrl,
-                    'Neue DEV Anfrage',
-                    '**Token:** ' . $token .
-                    "\n**Produkt:** " . $script .
-                    "\n**Resource:** " . $resource .
-                    "\n**IP:** " . $serverIP .
-                    "\n**Server:** " . ($serverName ?: 'Unbekannt') .
-                    "\n\n**Status:** PENDING" .
-                    "\n**Hinweis:** Kein Eintrag in scriptforge_licenses.",
-                    16753920,
-                    buildDevRequestComponents($token)
-                );
-            }
-        }
-
-        if ($devRequest) {
-            updateDevHeartbeat($conn, (int)$devRequest['id']);
-            respondDevRequest($devRequest, $product, $script, $resource, $serverIP);
-        }
-    }
 
     $pendingUntil = date('Y-m-d H:i:s', strtotime('+24 hours'));
 
