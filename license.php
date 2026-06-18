@@ -213,6 +213,7 @@ function sendDiscordWebhook(?string $webhookUrl, string $title, string $message,
 
 function getReusableDevRequest(mysqli $conn, string $serverIP, string $resource): ?array
 {
+    // Reuse only active request states so a fresh request can be created after expiry.
     $stmt = $conn->prepare("\n        SELECT *\n        FROM scriptforge_dev_requests\n        WHERE server_ip = ?\n        AND resource_name = ?\n        AND status IN ('pending', 'approved', 'denied', 'revoked')\n        ORDER BY id DESC\n        LIMIT 1\n    ");
 
     if (!$stmt) {
