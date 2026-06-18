@@ -34,12 +34,34 @@ if ($serverName === '' || strtolower($serverName) === 'unknown server') {
 
 $defaultWebhookUrl = "https://discord.com/api/webhooks/1510409400722915520/eb2btoaOHn5I0qkuHo6YHh70kQEv_K2mCSKDkwdsVQPqY1vamzb_lWfoi2ycOUkXAMqU";
 
-function sendDiscordWebhook($webhookUrl, $title, $message, $color = 16753920) {
+function buildDevRequestComponents($token) {
+    return [
+        [
+            "type" => 1,
+            "components" => [
+                [
+                    "type" => 2,
+                    "style" => 3,
+                    "label" => "Freigeben",
+                    "custom_id" => "sfdev:approve:" . $token
+                ],
+                [
+                    "type" => 2,
+                    "style" => 4,
+                    "label" => "Ablehnen",
+                    "custom_id" => "sfdev:deny:" . $token
+                ]
+            ]
+        ]
+    ];
+}
+
+function sendDiscordWebhook($webhookUrl, $title, $message, $color = 16753920, $components = null) {
     if (empty($webhookUrl)) {
         return;
     }
 
-    $payload = json_encode([
+    $payload = [
         "username" => "ScriptForge Logs",
         "embeds" => [[
             "title" => $title,
@@ -50,7 +72,13 @@ function sendDiscordWebhook($webhookUrl, $title, $message, $color = 16753920) {
             ],
             "timestamp" => gmdate("c")
         ]]
-    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    ];
+
+    if (!empty($components)) {
+        $payload["components"] = $components;
+    }
+
+    $payload = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
     try {
         if (function_exists('curl_init')) {
@@ -368,7 +396,8 @@ if (isPlaceholderLicenseKey($license, $placeholderKeys)) {
             "\n**Server:** " . ($serverName ?: "Unbekannt") .
             "\n\n**Status:** PENDING" .
             "\n**Hinweis:** Standard-Key erkannt, DEV Request angelegt.",
-            16753920
+            16753920,
+            buildDevRequestComponents($devRequest['token'])
         );
     }
 
