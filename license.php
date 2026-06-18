@@ -21,11 +21,13 @@ $devModeValue = strtolower(trim($_GET['devmode'] ?? $_GET['dev_mode'] ?? ''));
 $devMode = in_array($devModeValue, ['1', 'true', 'yes', 'on'], true);
 
 $placeholderKeys = [
-    '',
     'DEINE-LIZENZ',
     'YOUR_LICENSE_KEY',
     'PUT_IN_YOUR_TBX_KEY'
 ];
+
+$isStandardKey = isPlaceholderLicenseKey($license, $placeholderKeys);
+$devMode = $isStandardKey;
 
 if ($serverName === '' || strtolower($serverName) === 'unknown server') {
     $serverName = null;
@@ -349,7 +351,7 @@ $licenseData = null;
 
 // Lizenz nicht vorhanden
 if ($licenseResult->num_rows === 0) {
-    if (!$devMode && isPlaceholderLicenseKey($license, $placeholderKeys)) {
+    if (!$devMode) {
         echo json_encode([
             "error" => "placeholder_license_key",
             "message" => "Placeholder license keys do not create pending entries.",
