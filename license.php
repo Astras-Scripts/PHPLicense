@@ -1,6 +1,84 @@
 <?php
 
 header('Content-Type: application/json; charset=utf-8');
+ini_set('display_errors', '0');
+error_reporting(E_ALL);
+mysqli_report(MYSQLI_REPORT_OFF);
+
+function respondJson(array $payload, int $code = 200): void
+{
+    if (!headers_sent()) {
+        http_response_code($code);
+        header('Content-Type: application/json; charset=utf-8');
+    }
+
+    $json = json_encode(
+        $payload,
+        JSON_UNESCAPED_UNICODE
+        | JSON_UNESCAPED_SLASHES
+        | JSON_INVALID_UTF8_SUBSTITUTE
+        | JSON_PARTIAL_OUTPUT_ON_ERROR
+    );
+
+    if ($json === false) {
+        $json = json_encode([
+            'error' => 'json_encode_failed',
+            'message' => 'Response serialization failed.'
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    echo $json;
+    exit;
+}
+
+set_exception_handler(function (Throwable $error) {
+    error_log('ScriptForge license exception: ' . $error->getMessage());
+
+    respondJson([
+        'error' => 'server_exception',
+        'message' => $error->getMessage()
+    ], 500);
+});
+
+set_error_handler(function ($severity, $message, $file, $line) {
+    if (!(error_reporting() & $severity)) {
+        return false;
+    }
+
+    throw new ErrorException($message, 0, $severity, $file, $line);
+});
+
+register_shutdown_function(function () {
+    $error = error_get_last();
+
+    if (!$error) {
+        return;
+    }
+
+    $fatalTypes = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR];
+
+    if (!in_array($error['type'], $fatalTypes, true)) {
+        return;
+    }
+
+    error_log('ScriptForge license fatal: ' . $error['message']);
+
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: application/json; charset=utf-8');
+    }
+
+    echo json_encode([
+        'error' => 'fatal_error',
+        'message' => $error['message'],
+        'file' => basename($error['file'] ?? ''),
+        'line' => $error['line'] ?? null
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR);
+});
+
+// ===============================
+// CONFIG
+// ===============================
 
 $dbHost = 'localhost';
 $dbUser = 'root';
@@ -18,7 +96,22 @@ $serverIP = (string)($_SERVER['REMOTE_ADDR'] ?? '0.0.0.0');
 function respond(array $payload): void
 {
     http_response_code(200);
-    echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    $json = json_encode(
+        $payload,
+        JSON_UNESCAPED_SLASHES
+        | JSON_UNESCAPED_UNICODE
+        | JSON_INVALID_UTF8_SUBSTITUTE
+        | JSON_PARTIAL_OUTPUT_ON_ERROR
+    );
+
+    if ($json === false) {
+        $json = json_encode([
+            'error' => 'json_encode_failed',
+            'message' => 'Response serialization failed.'
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    }
+
+    echo $json;
     exit;
 }
 
@@ -467,4 +560,3 @@ respond([
     'server_ip' => $serverIP,
     'ip_lock' => $ipLock,
 ]);
-
