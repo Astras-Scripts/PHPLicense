@@ -12,7 +12,22 @@ function respondJson(array $payload, int $code = 200): void
         header('Content-Type: application/json; charset=utf-8');
     }
 
-    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $json = json_encode(
+        $payload,
+        JSON_UNESCAPED_UNICODE
+        | JSON_UNESCAPED_SLASHES
+        | JSON_INVALID_UTF8_SUBSTITUTE
+        | JSON_PARTIAL_OUTPUT_ON_ERROR
+    );
+
+    if ($json === false) {
+        $json = json_encode([
+            'error' => 'json_encode_failed',
+            'message' => 'Response serialization failed.'
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    echo $json;
     exit;
 }
 
