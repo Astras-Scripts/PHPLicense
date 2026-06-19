@@ -1,7 +1,10 @@
 param(
     [string]$TaskName = "PHPLicense Auto Pull",
     [string]$RepoPath = "C:\xampp\htdocs\PHPLicense",
-    [int]$IntervalMinutes = 1
+    [int]$IntervalMinutes = 1,
+    [string]$Branch = "",
+    [string]$ScriptName = "",
+    [string]$ScriptVersion = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,9 +15,27 @@ if (!(Test-Path -LiteralPath $scriptPath)) {
     throw "Auto-pull script does not exist: $scriptPath"
 }
 
+$argumentParts = @(
+    "-NoProfile",
+    "-ExecutionPolicy Bypass",
+    "-File `"$scriptPath`""
+)
+
+if (-not [string]::IsNullOrWhiteSpace($Branch)) {
+    $argumentParts += "-Branch `"$Branch`""
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ScriptName)) {
+    $argumentParts += "-ScriptName `"$ScriptName`""
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ScriptVersion)) {
+    $argumentParts += "-ScriptVersion `"$ScriptVersion`""
+}
+
 $action = New-ScheduledTaskAction `
     -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+    -Argument ($argumentParts -join ' ')
 
 $trigger = New-ScheduledTaskTrigger `
     -Once `

@@ -2,6 +2,8 @@ param(
     [string]$TaskName,
     [string]$RepoPath,
     [string]$ScriptName,
+    [string]$ScriptVersion = "",
+    [string]$Branch = "",
     [string]$RestartCommand,
     [int]$IntervalMinutes = 1
 )
@@ -30,7 +32,25 @@ if (!(Test-Path -LiteralPath $scriptPath)) {
     throw "Pull-and-restart script does not exist: $scriptPath"
 }
 
-$argument = "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -RepoPath `"$RepoPath`" -ScriptName `"$ScriptName`" -RestartCommand `"$RestartCommand`""
+$argumentParts = @(
+    "-NoProfile",
+    "-ExecutionPolicy Bypass",
+    "-File `"$scriptPath`"",
+    "-RepoPath `"$RepoPath`"",
+    "-ScriptName `"$ScriptName`""
+)
+
+if (-not [string]::IsNullOrWhiteSpace($ScriptVersion)) {
+    $argumentParts += "-ScriptVersion `"$ScriptVersion`""
+}
+
+if (-not [string]::IsNullOrWhiteSpace($Branch)) {
+    $argumentParts += "-Branch `"$Branch`""
+}
+
+$argumentParts += "-RestartCommand `"$RestartCommand`""
+
+$argument = $argumentParts -join ' '
 
 $action = New-ScheduledTaskAction `
     -Execute "powershell.exe" `
