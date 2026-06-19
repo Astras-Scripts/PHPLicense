@@ -166,6 +166,26 @@ function sendWebhook(string $url, string $title, string $message, int $color = 1
     }
 }
 
+function normalizeWebhookUrl($value, string $fallback = ''): string
+{
+    $candidate = trim((string)$value);
+    $fallback = trim($fallback);
+
+    if ($candidate === '' || $candidate === '0' || $candidate === '1' || strtolower($candidate) === 'null') {
+        return $fallback;
+    }
+
+    if (preg_match('#^https://(?:canary\\.|ptb\\.)?discord(?:app)?\\.com/api/webhooks/\\d+/[A-Za-z0-9._-]+$#', $candidate)) {
+        return $candidate;
+    }
+
+    if (preg_match('#^https://discord\\.com/api/webhooks/\\d+/[A-Za-z0-9._-]+$#', $candidate)) {
+        return $candidate;
+    }
+
+    return $fallback;
+}
+
 function isPlaceholderLicense(string $license): bool
 {
     return in_array($license, [
@@ -475,9 +495,7 @@ if (!$product) {
     ]);
 }
 
-$product['webhook_url'] = trim((string)($product['webhook_url'] ?? '')) !== ''
-    ? trim((string)$product['webhook_url'])
-    : $defaultWebhookUrl;
+$product['webhook_url'] = normalizeWebhookUrl($product['webhook_url'] ?? '', $defaultWebhookUrl);
 $product['log_success'] = $product['log_success'] ?? 0;
 $product['log_failed'] = $product['log_failed'] ?? 1;
 
@@ -623,7 +641,7 @@ if (!$row) {
     }
 
     $pendingUntil = date('Y-m-d H:i:s', strtotime('+24 hours'));
-    $webhookUrl = (string)($product['webhook_url'] ?? '');
+    $webhookUrl = normalizeWebhookUrl($product['webhook_url'] ?? '', $defaultWebhookUrl);
 
     $insertStmt = $conn->prepare(
         'INSERT INTO scriptforge_licenses
@@ -710,7 +728,7 @@ if (empty($row['server_ip'])) {
 }
 
 $currentStatus = (string)($row['status'] ?? 'inactive');
-$webhookUrl = (string)($row['webhook_url'] ?? ($product['webhook_url'] ?? ''));
+$webhookUrl = normalizeWebhookUrl($row['webhook_url'] ?? '', (string)($product['webhook_url'] ?? $defaultWebhookUrl));
 $logSuccess = (bool)($row['log_success'] ?? $product['log_success'] ?? false);
 $logFailed = (bool)($row['log_failed'] ?? $product['log_failed'] ?? true);
 $ipLock = (int)($row['ip_lock'] ?? 0) === 1;
