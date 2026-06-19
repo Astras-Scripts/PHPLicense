@@ -536,7 +536,7 @@ $licenseStmt->close();
 if (!$row) {
     $isPlaceholder = isPlaceholderLicense($license);
     $devServer = getActiveDevServer($conn, $serverIP);
-    $allowDevFlow = $devMode || $devServer !== null || $isPlaceholder;
+    $allowDevFlow = $devMode || $devServer !== null;
 
     if ($allowDevFlow) {
         $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
