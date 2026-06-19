@@ -236,6 +236,35 @@ function getActiveDevServer(mysqli $conn, string $serverIP): ?array
     return $server ?: null;
 }
 
+function syncDevServerState(mysqli $conn, string $serverIP, ?string $label, bool $active, ?string $createdBy = null): void
+{
+    $stmt = $conn->prepare(
+        'INSERT INTO scriptforge_dev_servers
+         (server_ip, label, active, created_by)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+             label = VALUES(label),
+             active = VALUES(active),
+             created_by = COALESCE(VALUES(created_by), created_by)'
+    );
+
+    if (!$stmt) {
+        error_log('ScriptForge DEV server sync failed: ' . $conn->error);
+        return;
+    }
+
+    $activeInt = $active ? 1 : 0;
+    $cleanLabel = $label !== null && trim($label) !== '' ? trim($label) : null;
+    $cleanCreatedBy = $createdBy !== null && trim($createdBy) !== '' ? trim($createdBy) : null;
+    $stmt->bind_param('ssis', $serverIP, $cleanLabel, $activeInt, $cleanCreatedBy);
+
+    if (!$stmt->execute()) {
+        error_log('ScriptForge DEV server sync execute failed: ' . $stmt->error);
+    }
+
+    $stmt->close();
+}
+
 function createDevRequestToken(): string
 {
     return bin2hex(random_bytes(16));
@@ -534,7 +563,6 @@ $row = $licenseResult ? $licenseResult->fetch_assoc() : null;
 $licenseStmt->close();
 
 if (!$row) {
-    $isPlaceholder = isPlaceholderLicense($license);
     $devServer = getActiveDevServer($conn, $serverIP);
     $allowDevFlow = $devMode || $devServer !== null;
 
@@ -573,6 +601,8 @@ if (!$row) {
             $devStatus = strtolower((string)($devRequest['status'] ?? 'pending'));
 
             if ($devStatus === 'denied' || $devStatus === 'revoked') {
+                syncDevServerState($conn, $serverIP, $serverName !== '' ? $serverName : null, false, $devStatus);
+
                 respond([
                     'script' => $script,
                     'resource' => $resource,
@@ -591,6 +621,7 @@ if (!$row) {
             $activeApproval = getActiveDevApproval($conn, $token, $serverIP, $resource);
 
             if ($activeApproval) {
+                syncDevServerState($conn, $serverIP, $serverName !== '' ? $serverName : null, true, 'approved');
                 updateDevHeartbeat($conn, (int)$devRequest['id'], $heartbeat);
 
                 error_log("ScriptForge DEV request i.O.: {$serverIP} / {$resource} / {$script}");
