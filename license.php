@@ -132,16 +132,35 @@ function sendWebhook(string $url, string $title, string $message, int $color = 1
         ]],
     ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $body,
-        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 5,
-    ]);
-    curl_exec($ch);
-    curl_close($ch);
+    try {
+        if (function_exists('curl_init')) {
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => $body,
+                CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 5,
+            ]);
+            curl_exec($ch);
+            curl_close($ch);
+            return;
+        }
+
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'POST',
+                'header' => "Content-Type: application/json\r\n",
+                'content' => $body,
+                'ignore_errors' => true,
+                'timeout' => 5,
+            ]
+        ]);
+
+        @file_get_contents($url, false, $context);
+    } catch (Throwable $error) {
+        error_log('ScriptForge webhook failed: ' . $error->getMessage());
+    }
 }
 
 function isPlaceholderLicense(string $license): bool
