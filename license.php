@@ -568,7 +568,7 @@ if (!$row) {
     $allowDevFlow = $devMode || $devServer !== null;
     $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
 
-    if (!$devRequest) {
+    if (($isPlaceholder || $allowDevFlow) && !$devRequest) {
         $devRequest = createDevRequest(
             $conn,
             $serverIP,
@@ -593,6 +593,27 @@ if (!$row) {
             "\n**Hint:** No matching license entry found.",
             16753920
         );
+    }
+
+    if ($isPlaceholder && !$allowDevFlow && $devRequest) {
+        updateDevHeartbeat($conn, (int)$devRequest['id'], '');
+
+        error_log("ScriptForge placeholder DEV request pending: {$serverIP} / {$resource} / {$script}");
+
+        respond([
+            'script' => $script,
+            'resource' => $resource,
+            'version' => $product['latest_version'] ?? $version,
+            'changelog' => $product['changelog'] ?? null,
+            'status' => $product['status'],
+            'license_valid' => false,
+            'license_status' => 'dev_pending',
+            'dev_mode' => true,
+            'dev_request_token' => (string)($devRequest['token'] ?? ''),
+            'message' => 'Placeholder key is waiting for Discord approval.',
+            'server_ip' => $serverIP,
+            'ip_lock' => false,
+        ]);
     }
 
     if ($allowDevFlow) {
