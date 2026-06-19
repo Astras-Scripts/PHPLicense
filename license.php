@@ -94,6 +94,7 @@ $serverName = trim((string)($_GET['servername'] ?? ''));
 $serverIP = (string)($_SERVER['REMOTE_ADDR'] ?? '0.0.0.0');
 $devModeValue = strtolower(trim((string)($_GET['devmode'] ?? $_GET['dev_mode'] ?? '')));
 $devMode = in_array($devModeValue, ['1', 'true', 'yes', 'on'], true);
+$defaultWebhookUrl = 'https://discord.com/api/webhooks/1510409400722915520/eb2btoaOHn5I0qkuHo6YHh70kQEv_K2mCSKDkwdsVQPqY1vamzb_lWfoi2ycOUkXAMqU';
 
 function respond(array $payload): void
 {
@@ -474,7 +475,9 @@ if (!$product) {
     ]);
 }
 
-$product['webhook_url'] = $product['webhook_url'] ?? '';
+$product['webhook_url'] = trim((string)($product['webhook_url'] ?? '')) !== ''
+    ? trim((string)$product['webhook_url'])
+    : $defaultWebhookUrl;
 $product['log_success'] = $product['log_success'] ?? 0;
 $product['log_failed'] = $product['log_failed'] ?? 1;
 
