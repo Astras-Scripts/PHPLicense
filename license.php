@@ -92,6 +92,8 @@ $version = trim((string)($_GET['version'] ?? ''));
 $heartbeat = trim((string)($_GET['heartbeat'] ?? ''));
 $serverName = trim((string)($_GET['servername'] ?? ''));
 $serverIP = (string)($_SERVER['REMOTE_ADDR'] ?? '0.0.0.0');
+$devModeValue = strtolower(trim((string)($_GET['devmode'] ?? $_GET['dev_mode'] ?? '')));
+$devMode = in_array($devModeValue, ['1', 'true', 'yes', 'on'], true);
 
 function respond(array $payload): void
 {
@@ -189,6 +191,240 @@ function productResponse(array $product, string $serverIP, ?bool $licenseValid =
     ], $extra);
 }
 
+function getActiveDevServer(mysqli $conn, string $serverIP): ?array
+{
+    $stmt = $conn->prepare(
+        'SELECT id, server_ip, label, active
+         FROM scriptforge_dev_servers
+         WHERE server_ip = ?
+           AND active = 1
+         LIMIT 1'
+    );
+
+    if (!$stmt) {
+        error_log('ScriptForge DEV server lookup failed: ' . $conn->error);
+        return null;
+    }
+
+    $stmt->bind_param('s', $serverIP);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $server = $result ? $result->fetch_assoc() : null;
+    $stmt->close();
+
+    return $server ?: null;
+}
+
+function createDevRequestToken(): string
+{
+    return bin2hex(random_bytes(16));
+}
+
+function getReusableDevRequest(mysqli $conn, string $serverIP, string $resource): ?array
+{
+    $stmt = $conn->prepare(
+        'SELECT *
+         FROM scriptforge_dev_requests
+         WHERE server_ip = ?
+           AND resource_name = ?
+           AND status IN ("pending", "approved", "denied", "revoked")
+         ORDER BY id DESC
+         LIMIT 1'
+    );
+
+    if (!$stmt) {
+        error_log('ScriptForge DEV reusable request lookup failed: ' . $conn->error);
+        return null;
+    }
+
+    $stmt->bind_param('ss', $serverIP, $resource);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $request = $result ? $result->fetch_assoc() : null;
+    $stmt->close();
+
+    return $request ?: null;
+}
+
+function createDevRequest(
+    mysqli $conn,
+    string $serverIP,
+    ?string $serverName,
+    string $resource,
+    string $script,
+    int $productId,
+    string $license
+): ?array {
+    $token = createDevRequestToken();
+
+    $stmt = $conn->prepare(
+        'INSERT INTO scriptforge_dev_requests
+        (
+            token,
+            server_ip,
+            server_name,
+            resource_name,
+            script_name,
+            product_id,
+            license_key,
+            status,
+            heartbeat_status,
+            requested_at,
+            last_check_at
+        )
+        VALUES
+        (
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            ?,
+            "pending",
+            "inactive",
+            NOW(),
+            NOW()
+        )'
+    );
+
+    if (!$stmt) {
+        error_log('ScriptForge DEV request insert prepare failed: ' . $conn->error);
+        return null;
+    }
+
+    $stmt->bind_param(
+        'sssssis',
+        $token,
+        $serverIP,
+        $serverName,
+        $resource,
+        $script,
+        $productId,
+        $license
+    );
+
+    if (!$stmt->execute()) {
+        error_log('ScriptForge DEV request insert failed: ' . $stmt->error);
+        $stmt->close();
+        return null;
+    }
+
+    $stmt->close();
+
+    return getReusableDevRequest($conn, $serverIP, $resource);
+}
+
+function getActiveDevApproval(mysqli $conn, string $token, string $serverIP, string $resource): ?array
+{
+    $stmt = $conn->prepare(
+        'SELECT *
+         FROM scriptforge_dev_approvals
+         WHERE token = ?
+           AND server_ip = ?
+           AND resource_name = ?
+           AND action = "approved"
+           AND status = "active"
+           AND expires_at > NOW()
+         ORDER BY id DESC
+         LIMIT 1'
+    );
+
+    if (!$stmt) {
+        error_log('ScriptForge DEV approval lookup failed: ' . $conn->error);
+        return null;
+    }
+
+    $stmt->bind_param('sss', $token, $serverIP, $resource);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $approval = $result ? $result->fetch_assoc() : null;
+    $stmt->close();
+
+    return $approval ?: null;
+}
+
+function expireOldDevApprovals(mysqli $conn): void
+{
+    try {
+        $stmt = $conn->prepare(
+            'UPDATE scriptforge_dev_approvals
+             SET status = "expired"
+             WHERE status = "active"
+               AND expires_at IS NOT NULL
+               AND expires_at <= NOW()'
+        );
+
+        if ($stmt) {
+            $stmt->execute();
+            $stmt->close();
+        }
+
+        $stmt = $conn->prepare(
+            'UPDATE scriptforge_dev_requests r
+             LEFT JOIN scriptforge_dev_approvals a
+                 ON a.token = r.token
+                AND a.status = "active"
+                AND a.expires_at > NOW()
+             SET r.status = "expired",
+                 r.heartbeat_status = "inactive"
+             WHERE r.status = "approved"
+               AND a.id IS NULL'
+        );
+
+        if ($stmt) {
+            $stmt->execute();
+            $stmt->close();
+        }
+    } catch (Throwable $error) {
+        error_log('ScriptForge DEV cleanup skipped: ' . $error->getMessage());
+    }
+}
+
+function updateDevHeartbeat(mysqli $conn, int $requestId, string $heartbeat): void
+{
+    if ($heartbeat === 'active') {
+        $stmt = $conn->prepare(
+            'UPDATE scriptforge_dev_requests
+             SET heartbeat_status = "active",
+                 started_at = IF(started_at IS NULL OR heartbeat_status = "inactive", NOW(), started_at),
+                 last_seen = NOW(),
+                 last_check_at = NOW()
+             WHERE id = ?'
+        );
+    } elseif ($heartbeat === 'heartbeat') {
+        $stmt = $conn->prepare(
+            'UPDATE scriptforge_dev_requests
+             SET heartbeat_status = "active",
+                 last_seen = NOW(),
+                 last_check_at = NOW()
+             WHERE id = ?'
+        );
+    } elseif ($heartbeat === 'inactive') {
+        $stmt = $conn->prepare(
+            'UPDATE scriptforge_dev_requests
+             SET heartbeat_status = "inactive",
+                 last_check_at = NOW()
+             WHERE id = ?'
+        );
+    } else {
+        $stmt = $conn->prepare(
+            'UPDATE scriptforge_dev_requests
+             SET last_check_at = NOW()
+             WHERE id = ?'
+        );
+    }
+
+    if (!$stmt) {
+        error_log('ScriptForge DEV heartbeat update failed: ' . $conn->error);
+        return;
+    }
+
+    $stmt->bind_param('i', $requestId);
+    $stmt->execute();
+    $stmt->close();
+}
+
 if ($script === '' || $license === '') {
     respond([
         'status' => 'offline',
@@ -271,6 +507,103 @@ if (!$row) {
                 'error' => 'placeholder_license',
             ]
         ));
+    }
+
+    if ($devMode) {
+        $devServer = getActiveDevServer($conn, $serverIP);
+
+        if ($devServer) {
+            $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
+
+            if (!$devRequest) {
+                $devRequest = createDevRequest(
+                    $conn,
+                    $serverIP,
+                    $serverName !== '' ? $serverName : null,
+                    $resource,
+                    $script,
+                    (int)$product['id'],
+                    $license
+                );
+
+                if ($devRequest && !empty($product['webhook_url'])) {
+                    sendWebhook(
+                        (string)$product['webhook_url'],
+                        'New ScriptForge DEV request',
+                        "**Token:** " . ($devRequest['token'] ?? 'unknown') .
+                        "\n**Product:** " . $script .
+                        "\n**Resource:** " . $resource .
+                        "\n**IP:** " . $serverIP .
+                        "\n**Server:** " . ($serverName !== '' ? $serverName : 'Unknown') .
+                        "\n\n**Status:** PENDING" .
+                        "\n**Hint:** No matching license entry found.",
+                        16753920
+                    );
+                }
+            }
+
+            if ($devRequest) {
+                $token = (string)($devRequest['token'] ?? '');
+                $devStatus = strtolower((string)($devRequest['status'] ?? 'pending'));
+
+                if ($devStatus === 'denied' || $devStatus === 'revoked') {
+                    respond([
+                        'script' => $script,
+                        'resource' => $resource,
+                        'version' => $product['latest_version'] ?? $version,
+                        'changelog' => $product['changelog'] ?? null,
+                        'status' => $product['status'],
+                        'license_valid' => false,
+                        'license_status' => $devStatus === 'denied' ? 'dev_denied' : 'dev_revoked',
+                        'dev_mode' => true,
+                        'dev_request_token' => $token,
+                        'server_ip' => $serverIP,
+                        'ip_lock' => false,
+                    ]);
+                }
+
+                $activeApproval = getActiveDevApproval($conn, $token, $serverIP, $resource);
+
+                if ($activeApproval) {
+                    updateDevHeartbeat($conn, (int)$devRequest['id'], $heartbeat);
+
+                    respond([
+                        'script' => $script,
+                        'resource' => $resource,
+                        'version' => $product['latest_version'] ?? $version,
+                        'changelog' => $product['changelog'] ?? null,
+                        'status' => $product['status'],
+                        'license_valid' => true,
+                        'license_status' => 'dev_approved',
+                        'dev_mode' => true,
+                        'dev_request_token' => $token,
+                        'dev_approval_expires_at' => $activeApproval['expires_at'],
+                        'log_success' => false,
+                        'log_failed' => true,
+                        'webhook_url' => null,
+                        'server_ip' => $serverIP,
+                        'ip_lock' => false,
+                    ]);
+                }
+
+                updateDevHeartbeat($conn, (int)$devRequest['id'], '');
+
+                respond([
+                    'script' => $script,
+                    'resource' => $resource,
+                    'version' => $product['latest_version'] ?? $version,
+                    'changelog' => $product['changelog'] ?? null,
+                    'status' => $product['status'],
+                    'license_valid' => false,
+                    'license_status' => 'dev_pending',
+                    'dev_mode' => true,
+                    'dev_request_token' => $token,
+                    'message' => 'DEV request is waiting for Discord approval.',
+                    'server_ip' => $serverIP,
+                    'ip_lock' => false,
+                ]);
+            }
+        }
     }
 
     $pendingUntil = date('Y-m-d H:i:s', strtotime('+24 hours'));
