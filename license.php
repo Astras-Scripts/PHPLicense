@@ -370,6 +370,19 @@ function createDevRequestToken(): string
     return bin2hex(random_bytes(16));
 }
 
+function buildDevRequestHint(bool $isPlaceholder, bool $allowDevFlow): string
+{
+    if ($isPlaceholder) {
+        return $allowDevFlow
+            ? 'Placeholder key with active DEV server entry. Waiting for Discord approval.'
+            : 'Placeholder key waiting for Discord approval.';
+    }
+
+    return $allowDevFlow
+        ? 'No matching license entry found. Waiting for Discord approval.'
+        : 'DEV request waiting for Discord approval.';
+}
+
 function bindStatementParams(mysqli_stmt $stmt, string $types, array &$values): bool
 {
     if ($types === '' || $values === []) {
@@ -778,6 +791,7 @@ if (!$row) {
 
     if ($isPlaceholder) {
         if ($devRequest && !empty($product['webhook_url'])) {
+            $devHint = buildDevRequestHint(true, $allowDevFlow);
             sendWebhook(
                 (string)$product['webhook_url'],
                 'New ScriptForge DEV request',
@@ -787,7 +801,7 @@ if (!$row) {
                 "\n**IP:** " . $serverIP .
                 "\n**Server:** " . ($serverName !== '' ? $serverName : 'Unknown') .
                 "\n\n**Status:** PENDING" .
-                "\n**Hint:** Placeholder key waiting for Discord approval.",
+                "\n**Hint:** {$devHint}",
                 16753920
             );
         }
@@ -815,11 +829,12 @@ if (!$row) {
                         'status' => $product['status'],
                         'license_valid' => true,
                         'license_status' => 'dev_approved',
-                        'dev_mode' => true,
-                        'dev_request_token' => $token,
-                        'dev_approval_expires_at' => $activeApproval['expires_at'],
-                        'log_success' => false,
-                        'log_failed' => true,
+                'dev_mode' => true,
+                'dev_request_token' => $token,
+                'dev_request_hint' => buildDevRequestHint(true, $allowDevFlow),
+                'dev_approval_expires_at' => $activeApproval['expires_at'],
+                'log_success' => false,
+                'log_failed' => true,
                         'webhook_url' => null,
                         'server_ip' => $serverIP,
                         'ip_lock' => false,
@@ -841,6 +856,7 @@ if (!$row) {
                 'license_status' => 'dev_pending',
                 'dev_mode' => true,
                 'dev_request_token' => $token,
+                'dev_request_hint' => buildDevRequestHint(true, $allowDevFlow),
                 'message' => 'Placeholder key is waiting for Discord approval.',
                 'server_ip' => $serverIP,
                 'ip_lock' => false,
@@ -859,6 +875,7 @@ if (!$row) {
             'license_status' => 'dev_pending',
             'dev_mode' => true,
             'dev_request_token' => null,
+            'dev_request_hint' => buildDevRequestHint(true, $allowDevFlow),
             'message' => 'Placeholder key is waiting for Discord approval.',
             'server_ip' => $serverIP,
             'ip_lock' => false,
@@ -866,6 +883,7 @@ if (!$row) {
     }
 
     if ($devRequest && !empty($product['webhook_url']) && $allowDevFlow) {
+        $devHint = buildDevRequestHint(false, $allowDevFlow);
         sendWebhook(
             (string)$product['webhook_url'],
             'New ScriptForge DEV request',
@@ -875,7 +893,7 @@ if (!$row) {
             "\n**IP:** " . $serverIP .
             "\n**Server:** " . ($serverName !== '' ? $serverName : 'Unknown') .
             "\n\n**Status:** PENDING" .
-            "\n**Hint:** No matching license entry found.",
+            "\n**Hint:** {$devHint}",
             16753920
         );
     }
@@ -898,6 +916,7 @@ if (!$row) {
                     'license_status' => $devStatus === 'denied' ? 'dev_denied' : 'dev_revoked',
                     'dev_mode' => true,
                     'dev_request_token' => $token,
+                    'dev_request_hint' => buildDevRequestHint(false, $allowDevFlow),
                     'server_ip' => $serverIP,
                     'ip_lock' => false,
                 ]);
@@ -921,6 +940,7 @@ if (!$row) {
                     'license_status' => 'dev_approved',
                     'dev_mode' => true,
                     'dev_request_token' => $token,
+                    'dev_request_hint' => buildDevRequestHint(false, $allowDevFlow),
                     'dev_approval_expires_at' => $activeApproval['expires_at'],
                     'log_success' => false,
                     'log_failed' => true,
@@ -944,6 +964,7 @@ if (!$row) {
                 'license_status' => 'dev_pending',
                 'dev_mode' => true,
                 'dev_request_token' => $token,
+                'dev_request_hint' => buildDevRequestHint(false, $allowDevFlow),
                 'message' => 'DEV request is waiting for Discord approval.',
                 'server_ip' => $serverIP,
                 'ip_lock' => false,
