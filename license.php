@@ -61,6 +61,28 @@ function isPlaceholderLicense(string $license): bool
     ], true);
 }
 
+function dbColumns(mysqli $conn, string $table): array
+{
+    $columns = [];
+    $result = $conn->query("SHOW COLUMNS FROM `{$table}`");
+
+    if ($result instanceof mysqli_result) {
+        while ($row = $result->fetch_assoc()) {
+            if (!empty($row['Field'])) {
+                $columns[] = (string)$row['Field'];
+            }
+        }
+        $result->free();
+    }
+
+    return $columns;
+}
+
+function hasColumn(array $columns, string $name): bool
+{
+    return in_array($name, $columns, true);
+}
+
 function productResponse(array $product, string $serverIP, ?bool $licenseValid = null, ?string $licenseStatus = null, array $extra = []): array
 {
     return array_merge([
@@ -95,8 +117,23 @@ if ($conn->connect_error) {
     ]);
 }
 
+$productColumns = dbColumns($conn, 'scriptforge_products');
+$productSelect = [
+    'id',
+    'script_name',
+    'latest_version',
+    'changelog',
+    'status',
+];
+
+foreach (['webhook_url', 'log_success', 'log_failed'] as $optionalColumn) {
+    if (hasColumn($productColumns, $optionalColumn)) {
+        $productSelect[] = $optionalColumn;
+    }
+}
+
 $productStmt = $conn->prepare(
-    'SELECT id, script_name, latest_version, changelog, status, webhook_url, log_success, log_failed
+    'SELECT ' . implode(', ', $productSelect) . '
      FROM scriptforge_products
      WHERE script_name = ?
      LIMIT 1'
@@ -117,6 +154,10 @@ if (!$product) {
     ]);
 }
 
+$product['webhook_url'] = (string)($product['webhook_url'] ?? '');
+$product['log_success'] = (bool)($product['log_success'] ?? false);
+$product['log_failed'] = (bool)($product['log_failed'] ?? true);
+
 if (($product['status'] ?? 'online') !== 'online') {
     if (!empty($product['log_failed']) && !empty($product['webhook_url'])) {
         sendWebhook(
@@ -135,6 +176,8 @@ if (($product['status'] ?? 'online') !== 'online') {
         ]
     ));
 }
+
+$licenseColumns = dbColumns($conn, 'scriptforge_licenses');
 
 $licenseStmt = $conn->prepare(
     'SELECT *
@@ -164,24 +207,52 @@ if (!$row) {
     $pendingUntil = date('Y-m-d H:i:s', strtotime('+24 hours'));
     $webhookUrl = (string)($product['webhook_url'] ?? '');
 
-    $insertStmt = $conn->prepare(
-        'INSERT INTO scriptforge_licenses
-         (license_key, script_name, resource_name, status, server_name, server_ip, last_ip, first_check, last_check, total_checks, pending_until, webhook_url, log_success, log_failed, ip_lock)
-         VALUES
-         (?, ?, ?, "pending", ?, ?, ?, NOW(), NOW(), 1, ?, ?, 0, 1, 0)'
+    $insertColumns = ['license_key', 'script_name', 'resource_name', 'status'];
+    $insertValues = ['?', '?', '?', '"pending"'];
+    $insertTypes = 'sss';
+    $insertParams = [$license, $script, $resource];
+
+    foreach ([
+        'server_name' => $serverName,
+        'server_ip' => $serverIP,
+        'last_ip' => $serverIP,
+        'first_check' => null,
+        'last_check' => null,
+        'total_checks' => 1,
+        'pending_until' => $pendingUntil,
+        'webhook_url' => $webhookUrl,
+        'log_success' => 0,
+        'log_failed' => 1,
+        'ip_lock' => 0,
+    ] as $column => $value) {
+        if (!hasColumn($licenseColumns, $column)) {
+            continue;
+        }
+
+        $insertColumns[] = $column;
+
+        if (in_array($column, ['first_check', 'last_check'], true)) {
+            $insertValues[] = 'NOW()';
+            continue;
+        }
+
+        $insertValues[] = '?';
+        if (is_int($value)) {
+            $insertTypes .= 'i';
+        } else {
+            $insertTypes .= 's';
+        }
+        $insertParams[] = $value;
+    }
+
+    $insertSql = sprintf(
+        'INSERT INTO scriptforge_licenses (%s) VALUES (%s)',
+        implode(', ', $insertColumns),
+        implode(', ', $insertValues)
     );
 
-    $insertStmt->bind_param(
-        'ssssssss',
-        $license,
-        $script,
-        $resource,
-        $serverName,
-        $serverIP,
-        $serverIP,
-        $pendingUntil,
-        $webhookUrl
-    );
+    $insertStmt = $conn->prepare($insertSql);
+    $insertStmt->bind_param($insertTypes, ...$insertParams);
 
     if (!$insertStmt->execute()) {
         respond(array_merge(
@@ -221,31 +292,50 @@ if (!$row) {
 
 $updateStmt = $conn->prepare(
     'UPDATE scriptforge_licenses
-     SET server_name = ?,
-         last_ip = ?,
-         last_check = NOW(),
-         total_checks = total_checks + 1
+     SET ' . implode(', ', array_filter([
+         hasColumn($licenseColumns, 'server_name') ? 'server_name = ?' : null,
+         hasColumn($licenseColumns, 'last_ip') ? 'last_ip = ?' : null,
+         hasColumn($licenseColumns, 'last_check') ? 'last_check = NOW()' : null,
+         hasColumn($licenseColumns, 'total_checks') ? 'total_checks = total_checks + 1' : null,
+     ])) . '
      WHERE id = ?'
 );
 
 $rowId = (int)$row['id'];
-$updateStmt->bind_param('ssi', $serverName, $serverIP, $rowId);
+$updateTypes = '';
+$updateParams = [];
+if (hasColumn($licenseColumns, 'server_name')) {
+    $updateTypes .= 's';
+    $updateParams[] = $serverName;
+}
+if (hasColumn($licenseColumns, 'last_ip')) {
+    $updateTypes .= 's';
+    $updateParams[] = $serverIP;
+}
+$updateTypes .= 'i';
+$updateParams[] = $rowId;
+
+$updateStmt->bind_param($updateTypes, ...$updateParams);
 $updateStmt->execute();
 $updateStmt->close();
 
 if (empty($row['first_check'])) {
-    $firstCheckStmt = $conn->prepare('UPDATE scriptforge_licenses SET first_check = NOW() WHERE id = ?');
-    $firstCheckStmt->bind_param('i', $rowId);
-    $firstCheckStmt->execute();
-    $firstCheckStmt->close();
+    if (hasColumn($licenseColumns, 'first_check')) {
+        $firstCheckStmt = $conn->prepare('UPDATE scriptforge_licenses SET first_check = NOW() WHERE id = ?');
+        $firstCheckStmt->bind_param('i', $rowId);
+        $firstCheckStmt->execute();
+        $firstCheckStmt->close();
+    }
 }
 
 if (empty($row['server_ip'])) {
-    $ipStmt = $conn->prepare('UPDATE scriptforge_licenses SET server_ip = ? WHERE id = ?');
-    $ipStmt->bind_param('si', $serverIP, $rowId);
-    $ipStmt->execute();
-    $ipStmt->close();
-    $row['server_ip'] = $serverIP;
+    if (hasColumn($licenseColumns, 'server_ip')) {
+        $ipStmt = $conn->prepare('UPDATE scriptforge_licenses SET server_ip = ? WHERE id = ?');
+        $ipStmt->bind_param('si', $serverIP, $rowId);
+        $ipStmt->execute();
+        $ipStmt->close();
+        $row['server_ip'] = $serverIP;
+    }
 }
 
 $currentStatus = (string)($row['status'] ?? 'inactive');
@@ -284,25 +374,41 @@ if ($ipLock && $expectedIP !== '' && $expectedIP !== $serverIP) {
 }
 
 if ($heartbeat === 'active' || $heartbeat === 'heartbeat') {
-    $hbStmt = $conn->prepare(
-        'UPDATE scriptforge_licenses
-         SET resource_status = "active",
-             started_at = IF(started_at IS NULL OR resource_status = "inactive", NOW(), started_at),
-             last_seen = NOW()
-         WHERE id = ?'
-    );
-    $hbStmt->bind_param('i', $rowId);
-    $hbStmt->execute();
-    $hbStmt->close();
+    $hbSets = [];
+    $hbTypes = 'i';
+    $hbParams = [$rowId];
+
+    if (hasColumn($licenseColumns, 'resource_status')) {
+        $hbSets[] = 'resource_status = "active"';
+    }
+    if (hasColumn($licenseColumns, 'started_at')) {
+        $hbSets[] = 'started_at = IF(started_at IS NULL OR resource_status = "inactive", NOW(), started_at)';
+    }
+    if (hasColumn($licenseColumns, 'last_seen')) {
+        $hbSets[] = 'last_seen = NOW()';
+    }
+
+    if ($hbSets) {
+        $hbStmt = $conn->prepare(
+            'UPDATE scriptforge_licenses
+             SET ' . implode(', ', $hbSets) . '
+             WHERE id = ?'
+        );
+        $hbStmt->bind_param($hbTypes, ...$hbParams);
+        $hbStmt->execute();
+        $hbStmt->close();
+    }
 } elseif ($heartbeat === 'inactive') {
-    $hbStmt = $conn->prepare(
-        'UPDATE scriptforge_licenses
-         SET resource_status = "inactive"
-         WHERE id = ?'
-    );
-    $hbStmt->bind_param('i', $rowId);
-    $hbStmt->execute();
-    $hbStmt->close();
+    if (hasColumn($licenseColumns, 'resource_status')) {
+        $hbStmt = $conn->prepare(
+            'UPDATE scriptforge_licenses
+             SET resource_status = "inactive"
+             WHERE id = ?'
+        );
+        $hbStmt->bind_param('i', $rowId);
+        $hbStmt->execute();
+        $hbStmt->close();
+    }
 }
 
 if ($currentStatus === 'pending') {
@@ -388,15 +494,24 @@ if ($currentStatus === 'trial') {
         ]);
     }
 
-    $expireTrialStmt = $conn->prepare(
-        'UPDATE scriptforge_licenses
-         SET status = "expired",
-             resource_status = "inactive"
-         WHERE id = ?'
-    );
-    $expireTrialStmt->bind_param('i', $rowId);
-    $expireTrialStmt->execute();
-    $expireTrialStmt->close();
+    $expireSets = [];
+    if (hasColumn($licenseColumns, 'status')) {
+        $expireSets[] = 'status = "expired"';
+    }
+    if (hasColumn($licenseColumns, 'resource_status')) {
+        $expireSets[] = 'resource_status = "inactive"';
+    }
+
+    if ($expireSets) {
+        $expireTrialStmt = $conn->prepare(
+            'UPDATE scriptforge_licenses
+             SET ' . implode(', ', $expireSets) . '
+             WHERE id = ?'
+        );
+        $expireTrialStmt->bind_param('i', $rowId);
+        $expireTrialStmt->execute();
+        $expireTrialStmt->close();
+    }
 
     if ($logFailed && $webhookUrl !== '') {
         sendWebhook(
@@ -467,4 +582,3 @@ respond([
     'server_ip' => $serverIP,
     'ip_lock' => $ipLock,
 ]);
-
