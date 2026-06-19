@@ -823,6 +823,7 @@ if (!$row) {
     $isPlaceholder = isPlaceholderLicense($license);
     $allowDevFlow = $devMode || $devServer !== null;
     $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
+    $devRequestWasCreated = false;
 
     if (($isPlaceholder || $allowDevFlow) && !$devRequest) {
         $devRequest = createDevRequest(
@@ -834,10 +835,11 @@ if (!$row) {
             (int)$product['id'],
             $license
         );
+        $devRequestWasCreated = $devRequest !== null;
     }
 
     if ($isPlaceholder) {
-        if ($devRequest && !empty($product['webhook_url'])) {
+        if ($devRequestWasCreated && !empty($product['webhook_url'])) {
             $devHint = buildDevRequestHint(true, $allowDevFlow);
             sendWebhook(
                 (string)$product['webhook_url'],
@@ -929,7 +931,7 @@ if (!$row) {
         ]);
     }
 
-    if ($devRequest && !empty($product['webhook_url']) && $allowDevFlow) {
+    if ($devRequestWasCreated && !empty($product['webhook_url']) && $allowDevFlow) {
         $devHint = buildDevRequestHint(false, $allowDevFlow);
         sendWebhook(
             (string)$product['webhook_url'],
