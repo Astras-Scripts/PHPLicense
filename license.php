@@ -543,12 +543,19 @@ function createDevRequest(
             $fetchStmt->close();
 
             if ($request) {
+                $request['__created'] = true;
                 return $request;
             }
         }
     }
 
-    return getReusableDevRequest($conn, $serverIP, $resource);
+    $request = getReusableDevRequest($conn, $serverIP, $resource);
+
+    if ($request) {
+        $request['__created'] = false;
+    }
+
+    return $request;
 }
 
 function getActiveDevApproval(mysqli $conn, string $token, string $serverIP, string $resource): ?array
@@ -835,7 +842,7 @@ if (!$row) {
             (int)$product['id'],
             $license
         );
-        $devRequestWasCreated = $devRequest !== null;
+        $devRequestWasCreated = !empty($devRequest['__created']);
     }
 
     if ($isPlaceholder) {
