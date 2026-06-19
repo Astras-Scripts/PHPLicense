@@ -444,11 +444,20 @@ if ($conn->connect_error) {
 }
 
 $productStmt = $conn->prepare(
-    'SELECT id, script_name, latest_version, changelog, status, webhook_url, log_success, log_failed
+    'SELECT *
      FROM scriptforge_products
      WHERE script_name = ?
      LIMIT 1'
 );
+
+if (!$productStmt) {
+    respond([
+        'status' => 'offline',
+        'license_valid' => false,
+        'error' => 'product_query_failed',
+        'message' => $conn->error,
+    ]);
+}
 
 $productStmt->bind_param('s', $script);
 $productStmt->execute();
@@ -464,6 +473,10 @@ if (!$product) {
         'server_ip' => $serverIP,
     ]);
 }
+
+$product['webhook_url'] = $product['webhook_url'] ?? '';
+$product['log_success'] = $product['log_success'] ?? 0;
+$product['log_failed'] = $product['log_failed'] ?? 1;
 
 if (($product['status'] ?? 'online') !== 'online') {
     if (!empty($product['log_failed']) && !empty($product['webhook_url'])) {
