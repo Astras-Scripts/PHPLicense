@@ -553,15 +553,41 @@ function createDevRequest(
 
 function getActiveDevApproval(mysqli $conn, string $token, string $serverIP, string $resource): ?array
 {
+    $columns = getTableColumns($conn, 'scriptforge_dev_approvals');
+    $tokenColumn = isset($columns['token']) ? 'token' : (isset($columns['request_token']) ? 'request_token' : null);
+    $statusColumn = isset($columns['status']) ? 'status' : null;
+    $actionColumn = isset($columns['action']) ? 'action' : null;
+    $activeColumn = isset($columns['active']) ? 'active' : null;
+    $expiresColumn = isset($columns['expires_at']) ? 'expires_at' : null;
+
+    if ($tokenColumn === null) {
+        return null;
+    }
+
+    $where = [
+        $tokenColumn . ' = ?',
+        'server_ip = ?',
+        'resource_name = ?'
+    ];
+
+    if ($actionColumn !== null) {
+        $where[] = $actionColumn . ' = "approved"';
+    }
+
+    if ($statusColumn !== null) {
+        $where[] = $statusColumn . ' = "active"';
+    } elseif ($activeColumn !== null) {
+        $where[] = $activeColumn . ' = 1';
+    }
+
+    if ($expiresColumn !== null) {
+        $where[] = $expiresColumn . ' > NOW()';
+    }
+
     $stmt = $conn->prepare(
         'SELECT *
          FROM scriptforge_dev_approvals
-         WHERE token = ?
-           AND server_ip = ?
-           AND resource_name = ?
-           AND action = "approved"
-           AND status = "active"
-           AND expires_at > NOW()
+         WHERE ' . implode(' AND ', $where) . '
          ORDER BY id DESC
          LIMIT 1'
     );
@@ -583,34 +609,55 @@ function getActiveDevApproval(mysqli $conn, string $token, string $serverIP, str
 function expireOldDevApprovals(mysqli $conn): void
 {
     try {
+        $columns = getTableColumns($conn, 'scriptforge_dev_approvals');
+        $tokenColumn = isset($columns['token']) ? 'token' : (isset($columns['request_token']) ? 'request_token' : null);
+        $statusColumn = isset($columns['status']) ? 'status' : null;
+        $activeColumn = isset($columns['active']) ? 'active' : null;
+        $expiresColumn = isset($columns['expires_at']) ? 'expires_at' : null;
+
+        if ($statusColumn !== null && $expiresColumn !== null) {
         $stmt = $conn->prepare(
             'UPDATE scriptforge_dev_approvals
-             SET status = "expired"
-             WHERE status = "active"
-               AND expires_at IS NOT NULL
-               AND expires_at <= NOW()'
+             SET ' . $statusColumn . ' = "expired"
+             WHERE ' . $statusColumn . ' = "active"
+               AND ' . $expiresColumn . ' IS NOT NULL
+               AND ' . $expiresColumn . ' <= NOW()'
         );
 
         if ($stmt) {
             $stmt->execute();
             $stmt->close();
         }
+        }
 
-        $stmt = $conn->prepare(
-            'UPDATE scriptforge_dev_requests r
-             LEFT JOIN scriptforge_dev_approvals a
-                 ON a.token = r.token
-                AND a.status = "active"
-                AND a.expires_at > NOW()
-             SET r.status = "expired",
-                 r.heartbeat_status = "inactive"
-             WHERE r.status = "approved"
-               AND a.id IS NULL'
-        );
+        if ($tokenColumn !== null && $expiresColumn !== null) {
+            $joinConditions = [
+                'a.' . $tokenColumn . ' = r.token',
+                $expiresColumn !== null
+                    ? 'a.' . $expiresColumn . ' > NOW()'
+                    : '1=1'
+            ];
 
-        if ($stmt) {
-            $stmt->execute();
-            $stmt->close();
+            if ($statusColumn !== null) {
+                $joinConditions[] = 'a.' . $statusColumn . ' = "active"';
+            } elseif ($activeColumn !== null) {
+                $joinConditions[] = 'a.' . $activeColumn . ' = 1';
+            }
+
+            $stmt = $conn->prepare(
+                'UPDATE scriptforge_dev_requests r
+                 LEFT JOIN scriptforge_dev_approvals a
+                     ON ' . implode(' AND ', $joinConditions) . '
+                 SET r.status = "expired",
+                     r.heartbeat_status = "inactive"
+                 WHERE r.status = "approved"
+                   AND a.id IS NULL'
+            );
+
+            if ($stmt) {
+                $stmt->execute();
+                $stmt->close();
+            }
         }
     } catch (Throwable $error) {
         error_log('ScriptForge DEV cleanup skipped: ' . $error->getMessage());
