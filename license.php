@@ -360,7 +360,24 @@ function createDevRequest(
         return null;
     }
 
+    $requestId = (int)$stmt->insert_id;
     $stmt->close();
+
+    if ($requestId > 0) {
+        $fetchStmt = $conn->prepare('SELECT * FROM scriptforge_dev_requests WHERE id = ? LIMIT 1');
+
+        if ($fetchStmt) {
+            $fetchStmt->bind_param('i', $requestId);
+            $fetchStmt->execute();
+            $result = $fetchStmt->get_result();
+            $request = $result ? $result->fetch_assoc() : null;
+            $fetchStmt->close();
+
+            if ($request) {
+                return $request;
+            }
+        }
+    }
 
     return getReusableDevRequest($conn, $serverIP, $resource);
 }
