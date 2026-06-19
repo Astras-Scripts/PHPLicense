@@ -580,7 +580,96 @@ if (!$row) {
         );
     }
 
-    if ($devRequest && (!empty($product['webhook_url']) && ($allowDevFlow || $isPlaceholder))) {
+    if ($isPlaceholder) {
+        if ($devRequest && !empty($product['webhook_url'])) {
+            sendWebhook(
+                (string)$product['webhook_url'],
+                'New ScriptForge DEV request',
+                "**Token:** " . ($devRequest['token'] ?? 'unknown') .
+                "\n**Product:** " . $script .
+                "\n**Resource:** " . $resource .
+                "\n**IP:** " . $serverIP .
+                "\n**Server:** " . ($serverName !== '' ? $serverName : 'Unknown') .
+                "\n\n**Status:** PENDING" .
+                "\n**Hint:** Placeholder key waiting for Discord approval.",
+                16753920
+            );
+        }
+
+        if ($devRequest) {
+            $token = (string)($devRequest['token'] ?? '');
+            $devStatus = strtolower((string)($devRequest['status'] ?? 'pending'));
+
+            if ($devStatus === 'denied' || $devStatus === 'revoked') {
+                syncDevServerState($conn, $serverIP, $serverName !== '' ? $serverName : null, false, $devStatus);
+            } else {
+                $activeApproval = getActiveDevApproval($conn, $token, $serverIP, $resource);
+
+                if ($activeApproval) {
+                    syncDevServerState($conn, $serverIP, $serverName !== '' ? $serverName : null, true, 'approved');
+                    updateDevHeartbeat($conn, (int)$devRequest['id'], $heartbeat);
+
+                    error_log("ScriptForge placeholder DEV request i.O.: {$serverIP} / {$resource} / {$script}");
+
+                    respond([
+                        'script' => $script,
+                        'resource' => $resource,
+                        'version' => $product['latest_version'] ?? $version,
+                        'changelog' => $product['changelog'] ?? null,
+                        'status' => $product['status'],
+                        'license_valid' => true,
+                        'license_status' => 'dev_approved',
+                        'dev_mode' => true,
+                        'dev_request_token' => $token,
+                        'dev_approval_expires_at' => $activeApproval['expires_at'],
+                        'log_success' => false,
+                        'log_failed' => true,
+                        'webhook_url' => null,
+                        'server_ip' => $serverIP,
+                        'ip_lock' => false,
+                    ]);
+                }
+            }
+
+            updateDevHeartbeat($conn, (int)$devRequest['id'], '');
+
+            error_log("ScriptForge placeholder DEV request pending: {$serverIP} / {$resource} / {$script}");
+
+            respond([
+                'script' => $script,
+                'resource' => $resource,
+                'version' => $product['latest_version'] ?? $version,
+                'changelog' => $product['changelog'] ?? null,
+                'status' => $product['status'],
+                'license_valid' => false,
+                'license_status' => 'dev_pending',
+                'dev_mode' => true,
+                'dev_request_token' => $token,
+                'message' => 'Placeholder key is waiting for Discord approval.',
+                'server_ip' => $serverIP,
+                'ip_lock' => false,
+            ]);
+        }
+
+        error_log("ScriptForge placeholder DEV request could not be created: {$serverIP} / {$resource} / {$script}");
+
+        respond([
+            'script' => $script,
+            'resource' => $resource,
+            'version' => $product['latest_version'] ?? $version,
+            'changelog' => $product['changelog'] ?? null,
+            'status' => $product['status'],
+            'license_valid' => false,
+            'license_status' => 'dev_pending',
+            'dev_mode' => true,
+            'dev_request_token' => null,
+            'message' => 'Placeholder key is waiting for Discord approval.',
+            'server_ip' => $serverIP,
+            'ip_lock' => false,
+        ]);
+    }
+
+    if ($devRequest && !empty($product['webhook_url']) && $allowDevFlow) {
         sendWebhook(
             (string)$product['webhook_url'],
             'New ScriptForge DEV request',
@@ -593,27 +682,6 @@ if (!$row) {
             "\n**Hint:** No matching license entry found.",
             16753920
         );
-    }
-
-    if ($isPlaceholder && !$allowDevFlow && $devRequest) {
-        updateDevHeartbeat($conn, (int)$devRequest['id'], '');
-
-        error_log("ScriptForge placeholder DEV request pending: {$serverIP} / {$resource} / {$script}");
-
-        respond([
-            'script' => $script,
-            'resource' => $resource,
-            'version' => $product['latest_version'] ?? $version,
-            'changelog' => $product['changelog'] ?? null,
-            'status' => $product['status'],
-            'license_valid' => false,
-            'license_status' => 'dev_pending',
-            'dev_mode' => true,
-            'dev_request_token' => (string)($devRequest['token'] ?? ''),
-            'message' => 'Placeholder key is waiting for Discord approval.',
-            'server_ip' => $serverIP,
-            'ip_lock' => false,
-        ]);
     }
 
     if ($allowDevFlow) {
