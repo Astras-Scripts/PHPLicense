@@ -212,6 +212,87 @@ function productResponse(array $product, string $serverIP, ?bool $licenseValid =
     ], $extra);
 }
 
+function getTableColumns(mysqli $conn, string $table): array
+{
+    static $cache = [];
+
+    if (isset($cache[$table])) {
+        return $cache[$table];
+    }
+
+    $stmt = $conn->prepare(
+        'SELECT COLUMN_NAME
+         FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = ?'
+    );
+
+    if (!$stmt) {
+        return $cache[$table] = [];
+    }
+
+    $stmt->bind_param('s', $table);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $columns = [];
+
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            $columns[(string)$row['COLUMN_NAME']] = true;
+        }
+    }
+
+    $stmt->close();
+
+    return $cache[$table] = $columns;
+}
+
+function getDevRequestSchema(mysqli $conn): array
+{
+    $columns = getTableColumns($conn, 'scriptforge_dev_requests');
+
+    $schema = [
+        'token' => isset($columns['token']) ? 'token' : (isset($columns['request_token']) ? 'request_token' : null),
+        'server_name' => isset($columns['server_name']) ? 'server_name' : null,
+        'product_id' => isset($columns['product_id']) ? 'product_id' : null,
+        'license_key' => isset($columns['license_key']) ? 'license_key' : null,
+        'heartbeat_status' => isset($columns['heartbeat_status']) ? 'heartbeat_status' : null,
+        'requested_at' => isset($columns['requested_at']) ? 'requested_at' : (isset($columns['created_at']) ? 'created_at' : null),
+        'last_check' => isset($columns['last_check_at']) ? 'last_check_at' : (isset($columns['last_check']) ? 'last_check' : null),
+        'started_at' => isset($columns['started_at']) ? 'started_at' : null,
+        'last_seen' => isset($columns['last_seen']) ? 'last_seen' : null,
+        'decided_by' => isset($columns['decided_by']) ? 'decided_by' : null,
+        'decided_at' => isset($columns['decided_at']) ? 'decided_at' : null,
+    ];
+
+    return $schema;
+}
+
+function buildDevRequestSelectSql(mysqli $conn): string
+{
+    $schema = getDevRequestSchema($conn);
+    $fields = [
+        'id',
+        $schema['token'] !== null ? $schema['token'] . ' AS token' : 'NULL AS token',
+        'server_ip',
+        $schema['server_name'] !== null ? $schema['server_name'] . ' AS server_name' : 'NULL AS server_name',
+        'resource_name',
+        'script_name',
+        $schema['product_id'] !== null ? $schema['product_id'] . ' AS product_id' : 'NULL AS product_id',
+        $schema['license_key'] !== null ? $schema['license_key'] . ' AS license_key' : 'NULL AS license_key',
+        'status',
+        $schema['heartbeat_status'] !== null ? $schema['heartbeat_status'] . ' AS heartbeat_status' : 'NULL AS heartbeat_status',
+        $schema['requested_at'] !== null ? $schema['requested_at'] . ' AS requested_at' : 'NULL AS requested_at',
+        $schema['last_check'] !== null ? $schema['last_check'] . ' AS last_check_at' : 'NULL AS last_check_at',
+        $schema['started_at'] !== null ? $schema['started_at'] . ' AS started_at' : 'NULL AS started_at',
+        $schema['last_seen'] !== null ? $schema['last_seen'] . ' AS last_seen' : 'NULL AS last_seen',
+        $schema['decided_by'] !== null ? $schema['decided_by'] . ' AS decided_by' : 'NULL AS decided_by',
+        $schema['decided_at'] !== null ? $schema['decided_at'] . ' AS decided_at' : 'NULL AS decided_at',
+    ];
+
+    return 'SELECT ' . implode(', ', $fields) . ' FROM scriptforge_dev_requests';
+}
+
 function getActiveDevServer(mysqli $conn, string $serverIP): ?array
 {
     $stmt = $conn->prepare(
@@ -238,15 +319,29 @@ function getActiveDevServer(mysqli $conn, string $serverIP): ?array
 
 function syncDevServerState(mysqli $conn, string $serverIP, ?string $label, bool $active, ?string $createdBy = null): void
 {
-    $stmt = $conn->prepare(
-        'INSERT INTO scriptforge_dev_servers
-         (server_ip, label, active, created_by)
-         VALUES (?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-             label = VALUES(label),
-             active = VALUES(active),
-             created_by = COALESCE(VALUES(created_by), created_by)'
-    );
+    $columns = getTableColumns($conn, 'scriptforge_dev_servers');
+    $hasCreatedBy = isset($columns['created_by']);
+
+    if ($hasCreatedBy) {
+        $stmt = $conn->prepare(
+            'INSERT INTO scriptforge_dev_servers
+             (server_ip, label, active, created_by)
+             VALUES (?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                 label = VALUES(label),
+                 active = VALUES(active),
+                 created_by = COALESCE(VALUES(created_by), created_by)'
+        );
+    } else {
+        $stmt = $conn->prepare(
+            'INSERT INTO scriptforge_dev_servers
+             (server_ip, label, active)
+             VALUES (?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+                 label = VALUES(label),
+                 active = VALUES(active)'
+        );
+    }
 
     if (!$stmt) {
         error_log('ScriptForge DEV server sync failed: ' . $conn->error);
@@ -256,7 +351,12 @@ function syncDevServerState(mysqli $conn, string $serverIP, ?string $label, bool
     $activeInt = $active ? 1 : 0;
     $cleanLabel = $label !== null && trim($label) !== '' ? trim($label) : null;
     $cleanCreatedBy = $createdBy !== null && trim($createdBy) !== '' ? trim($createdBy) : null;
-    $stmt->bind_param('ssis', $serverIP, $cleanLabel, $activeInt, $cleanCreatedBy);
+
+    if ($hasCreatedBy) {
+        $stmt->bind_param('ssis', $serverIP, $cleanLabel, $activeInt, $cleanCreatedBy);
+    } else {
+        $stmt->bind_param('ssi', $serverIP, $cleanLabel, $activeInt);
+    }
 
     if (!$stmt->execute()) {
         error_log('ScriptForge DEV server sync execute failed: ' . $stmt->error);
@@ -270,16 +370,32 @@ function createDevRequestToken(): string
     return bin2hex(random_bytes(16));
 }
 
+function bindStatementParams(mysqli_stmt $stmt, string $types, array &$values): bool
+{
+    if ($types === '' || $values === []) {
+        return true;
+    }
+
+    $params = [$types];
+    foreach ($values as $index => &$value) {
+        $params[] = &$value;
+    }
+    unset($value);
+
+    return call_user_func_array([$stmt, 'bind_param'], $params);
+}
+
 function getReusableDevRequest(mysqli $conn, string $serverIP, string $resource): ?array
 {
-    $stmt = $conn->prepare(
-        'SELECT *
-         FROM scriptforge_dev_requests
-         WHERE server_ip = ?
+    $selectSql = buildDevRequestSelectSql($conn) .
+        ' WHERE server_ip = ?
            AND resource_name = ?
-           AND status IN ("pending", "approved", "denied", "revoked")
+           AND status IN ("pending", "dev_pending", "approved", "denied", "revoked")
          ORDER BY id DESC
-         LIMIT 1'
+         LIMIT 1';
+
+    $stmt = $conn->prepare(
+        $selectSql
     );
 
     if (!$stmt) {
@@ -305,37 +421,81 @@ function createDevRequest(
     int $productId,
     string $license
 ): ?array {
+    $schema = getDevRequestSchema($conn);
     $token = createDevRequestToken();
+    $columns = [];
+    $placeholders = [];
+    $values = [];
+    $types = '';
+
+    $addBound = function (string $column, $value, string $type) use (&$columns, &$placeholders, &$values, &$types): void {
+        $columns[] = $column;
+        $placeholders[] = '?';
+        $values[] = $value;
+        $types .= $type;
+    };
+
+    $addExpression = function (string $column, string $expression) use (&$columns, &$placeholders): void {
+        $columns[] = $column;
+        $placeholders[] = $expression;
+    };
+
+    if ($schema['token'] !== null) {
+        $addBound($schema['token'], $token, 's');
+    }
+
+    $addBound('server_ip', $serverIP, 's');
+
+    if ($schema['server_name'] !== null) {
+        $addBound($schema['server_name'], $serverName, 's');
+    }
+
+    $addBound('resource_name', $resource, 's');
+    $addBound('script_name', $script, 's');
+
+    if ($schema['product_id'] !== null) {
+        $addBound($schema['product_id'], $productId, 'i');
+    }
+
+    if ($schema['license_key'] !== null) {
+        $addBound($schema['license_key'], $license, 's');
+    }
+
+    $addBound('status', 'pending', 's');
+
+    if ($schema['heartbeat_status'] !== null) {
+        $addBound($schema['heartbeat_status'], 'inactive', 's');
+    }
+
+    if ($schema['requested_at'] !== null) {
+        $addExpression($schema['requested_at'], 'NOW()');
+    }
+
+    if ($schema['last_check'] !== null) {
+        $addExpression($schema['last_check'], 'NOW()');
+    }
+
+    if ($schema['started_at'] !== null) {
+        $addExpression($schema['started_at'], 'NULL');
+    }
+
+    if ($schema['last_seen'] !== null) {
+        $addExpression($schema['last_seen'], 'NULL');
+    }
+
+    if ($schema['decided_by'] !== null) {
+        $addExpression($schema['decided_by'], 'NULL');
+    }
+
+    if ($schema['decided_at'] !== null) {
+        $addExpression($schema['decided_at'], 'NULL');
+    }
 
     $stmt = $conn->prepare(
         'INSERT INTO scriptforge_dev_requests
-        (
-            token,
-            server_ip,
-            server_name,
-            resource_name,
-            script_name,
-            product_id,
-            license_key,
-            status,
-            heartbeat_status,
-            requested_at,
-            last_check_at
-        )
+        (' . implode(', ', $columns) . ')
         VALUES
-        (
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            ?,
-            "pending",
-            "inactive",
-            NOW(),
-            NOW()
-        )'
+        (' . implode(', ', $placeholders) . ')'
     );
 
     if (!$stmt) {
@@ -343,16 +503,11 @@ function createDevRequest(
         return null;
     }
 
-    $stmt->bind_param(
-        'sssssis',
-        $token,
-        $serverIP,
-        $serverName,
-        $resource,
-        $script,
-        $productId,
-        $license
-    );
+    if (!bindStatementParams($stmt, $types, $values)) {
+        error_log('ScriptForge DEV request insert bind failed: ' . $stmt->error);
+        $stmt->close();
+        return null;
+    }
 
     if (!$stmt->execute()) {
         error_log('ScriptForge DEV request insert failed: ' . $stmt->error);
@@ -364,7 +519,8 @@ function createDevRequest(
     $stmt->close();
 
     if ($requestId > 0) {
-        $fetchStmt = $conn->prepare('SELECT * FROM scriptforge_dev_requests WHERE id = ? LIMIT 1');
+        $fetchSql = buildDevRequestSelectSql($conn) . ' WHERE id = ? LIMIT 1';
+        $fetchStmt = $conn->prepare($fetchSql);
 
         if ($fetchStmt) {
             $fetchStmt->bind_param('i', $requestId);
@@ -450,36 +606,59 @@ function expireOldDevApprovals(mysqli $conn): void
 
 function updateDevHeartbeat(mysqli $conn, int $requestId, string $heartbeat): void
 {
+    $schema = getDevRequestSchema($conn);
+
     if ($heartbeat === 'active') {
-        $stmt = $conn->prepare(
-            'UPDATE scriptforge_dev_requests
-             SET heartbeat_status = "active",
-                 started_at = IF(started_at IS NULL OR heartbeat_status = "inactive", NOW(), started_at),
-                 last_seen = NOW(),
-                 last_check_at = NOW()
-             WHERE id = ?'
-        );
+        $updates = [];
+        if ($schema['heartbeat_status'] !== null) {
+            $updates[] = $schema['heartbeat_status'] . ' = "active"';
+        }
+        if ($schema['started_at'] !== null) {
+            $updates[] = $schema['started_at'] . ' = IF(' . $schema['started_at'] . ' IS NULL, NOW(), ' . $schema['started_at'] . ')';
+        }
+        if ($schema['last_seen'] !== null) {
+            $updates[] = $schema['last_seen'] . ' = NOW()';
+        }
+        if ($schema['last_check'] !== null) {
+            $updates[] = $schema['last_check'] . ' = NOW()';
+        }
+        if ($updates === []) {
+            return;
+        }
+        $stmt = $conn->prepare('UPDATE scriptforge_dev_requests SET ' . implode(', ', $updates) . ' WHERE id = ?');
     } elseif ($heartbeat === 'heartbeat') {
-        $stmt = $conn->prepare(
-            'UPDATE scriptforge_dev_requests
-             SET heartbeat_status = "active",
-                 last_seen = NOW(),
-                 last_check_at = NOW()
-             WHERE id = ?'
-        );
+        $updates = [];
+        if ($schema['heartbeat_status'] !== null) {
+            $updates[] = $schema['heartbeat_status'] . ' = "active"';
+        }
+        if ($schema['last_seen'] !== null) {
+            $updates[] = $schema['last_seen'] . ' = NOW()';
+        }
+        if ($schema['last_check'] !== null) {
+            $updates[] = $schema['last_check'] . ' = NOW()';
+        }
+        if ($updates === []) {
+            return;
+        }
+        $stmt = $conn->prepare('UPDATE scriptforge_dev_requests SET ' . implode(', ', $updates) . ' WHERE id = ?');
     } elseif ($heartbeat === 'inactive') {
-        $stmt = $conn->prepare(
-            'UPDATE scriptforge_dev_requests
-             SET heartbeat_status = "inactive",
-                 last_check_at = NOW()
-             WHERE id = ?'
-        );
+        $updates = [];
+        if ($schema['heartbeat_status'] !== null) {
+            $updates[] = $schema['heartbeat_status'] . ' = "inactive"';
+        }
+        if ($schema['last_check'] !== null) {
+            $updates[] = $schema['last_check'] . ' = NOW()';
+        }
+        if ($updates === []) {
+            return;
+        }
+        $stmt = $conn->prepare('UPDATE scriptforge_dev_requests SET ' . implode(', ', $updates) . ' WHERE id = ?');
     } else {
-        $stmt = $conn->prepare(
-            'UPDATE scriptforge_dev_requests
-             SET last_check_at = NOW()
-             WHERE id = ?'
-        );
+        $column = $schema['last_check'] ?? null;
+        if ($column === null) {
+            return;
+        }
+        $stmt = $conn->prepare('UPDATE scriptforge_dev_requests SET ' . $column . ' = NOW() WHERE id = ?');
     }
 
     if (!$stmt) {
