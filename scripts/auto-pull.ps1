@@ -1,7 +1,13 @@
 param(
     [string]$RepoPath = "C:\xampp\htdocs\PHPLicense",
     [string]$Remote = "origin",
-    [string]$Branch = "main"
+    [string]$Branch = "",
+    [string]$ScriptName = "",
+    [string]$ScriptVersion = "",
+    [string]$LegacyBranch = "main",
+    [string]$ModernBranch = "license-devrequest",
+    [string]$VersionCutoff = "1.1.0.5",
+    [string]$UsedCarsName = "ast3ra_used_cars_v3"
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,6 +61,19 @@ if (!(Get-Command git -ErrorAction SilentlyContinue)) {
     throw "git.exe was not found in PATH"
 }
 
+. (Join-Path $PSScriptRoot "license-branch-routing.ps1")
+
+$branchInfo = Resolve-LicenseBranch `
+    -ScriptName $ScriptName `
+    -ScriptVersion $ScriptVersion `
+    -RequestedBranch $Branch `
+    -LegacyBranch $LegacyBranch `
+    -ModernBranch $ModernBranch `
+    -VersionCutoff $VersionCutoff `
+    -UsedCarsName $UsedCarsName
+
+$Branch = $branchInfo.Branch
+
 if (!(Test-Path -LiteralPath $logDir)) {
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 }
@@ -75,7 +94,7 @@ try {
     Set-Content -LiteralPath $lockPath -Value ([System.Diagnostics.Process]::GetCurrentProcess().Id)
     Set-Location -LiteralPath $RepoPath
 
-    Write-Log "Starting auto-pull for $Remote/$Branch."
+    Write-Log "Starting auto-pull for $Remote/$Branch. Rule: $($branchInfo.Reason)"
 
     Invoke-Git @("fetch", $Remote, $Branch) | Out-Null
 
