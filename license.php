@@ -534,7 +534,11 @@ $row = $licenseResult ? $licenseResult->fetch_assoc() : null;
 $licenseStmt->close();
 
 if (!$row) {
-    if (isPlaceholderLicense($license)) {
+    $isPlaceholder = isPlaceholderLicense($license);
+    $devServer = getActiveDevServer($conn, $serverIP);
+    $allowDevFlow = $devMode || $devServer !== null;
+
+    if ($isPlaceholder && !$allowDevFlow) {
         respond(array_merge(
             productResponse($product, $serverIP, false, 'invalid'),
             [
@@ -543,85 +547,41 @@ if (!$row) {
         ));
     }
 
-    if ($devMode) {
-        $devServer = getActiveDevServer($conn, $serverIP);
+    if ($allowDevFlow) {
+        $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
 
-        if ($devServer) {
-            $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
+        if (!$devRequest) {
+            $devRequest = createDevRequest(
+                $conn,
+                $serverIP,
+                $serverName !== '' ? $serverName : null,
+                $resource,
+                $script,
+                (int)$product['id'],
+                $license
+            );
 
-            if (!$devRequest) {
-                $devRequest = createDevRequest(
-                    $conn,
-                    $serverIP,
-                    $serverName !== '' ? $serverName : null,
-                    $resource,
-                    $script,
-                    (int)$product['id'],
-                    $license
+            if ($devRequest && !empty($product['webhook_url'])) {
+                sendWebhook(
+                    (string)$product['webhook_url'],
+                    'New ScriptForge DEV request',
+                    "**Token:** " . ($devRequest['token'] ?? 'unknown') .
+                    "\n**Product:** " . $script .
+                    "\n**Resource:** " . $resource .
+                    "\n**IP:** " . $serverIP .
+                    "\n**Server:** " . ($serverName !== '' ? $serverName : 'Unknown') .
+                    "\n\n**Status:** PENDING" .
+                    "\n**Hint:** No matching license entry found.",
+                    16753920
                 );
-
-                if ($devRequest && !empty($product['webhook_url'])) {
-                    sendWebhook(
-                        (string)$product['webhook_url'],
-                        'New ScriptForge DEV request',
-                        "**Token:** " . ($devRequest['token'] ?? 'unknown') .
-                        "\n**Product:** " . $script .
-                        "\n**Resource:** " . $resource .
-                        "\n**IP:** " . $serverIP .
-                        "\n**Server:** " . ($serverName !== '' ? $serverName : 'Unknown') .
-                        "\n\n**Status:** PENDING" .
-                        "\n**Hint:** No matching license entry found.",
-                        16753920
-                    );
-                }
             }
+        }
 
-            if ($devRequest) {
-                $token = (string)($devRequest['token'] ?? '');
-                $devStatus = strtolower((string)($devRequest['status'] ?? 'pending'));
+        if ($devRequest) {
+            $token = (string)($devRequest['token'] ?? '');
+            $devStatus = strtolower((string)($devRequest['status'] ?? 'pending'));
 
-                if ($devStatus === 'denied' || $devStatus === 'revoked') {
-                    respond([
-                        'script' => $script,
-                        'resource' => $resource,
-                        'version' => $product['latest_version'] ?? $version,
-                        'changelog' => $product['changelog'] ?? null,
-                        'status' => $product['status'],
-                        'license_valid' => false,
-                        'license_status' => $devStatus === 'denied' ? 'dev_denied' : 'dev_revoked',
-                        'dev_mode' => true,
-                        'dev_request_token' => $token,
-                        'server_ip' => $serverIP,
-                        'ip_lock' => false,
-                    ]);
-                }
-
-                $activeApproval = getActiveDevApproval($conn, $token, $serverIP, $resource);
-
-                if ($activeApproval) {
-                    updateDevHeartbeat($conn, (int)$devRequest['id'], $heartbeat);
-
-                    respond([
-                        'script' => $script,
-                        'resource' => $resource,
-                        'version' => $product['latest_version'] ?? $version,
-                        'changelog' => $product['changelog'] ?? null,
-                        'status' => $product['status'],
-                        'license_valid' => true,
-                        'license_status' => 'dev_approved',
-                        'dev_mode' => true,
-                        'dev_request_token' => $token,
-                        'dev_approval_expires_at' => $activeApproval['expires_at'],
-                        'log_success' => false,
-                        'log_failed' => true,
-                        'webhook_url' => null,
-                        'server_ip' => $serverIP,
-                        'ip_lock' => false,
-                    ]);
-                }
-
-                updateDevHeartbeat($conn, (int)$devRequest['id'], '');
-
+            if ($devStatus === 'denied' || $devStatus === 'revoked') {
                 respond([
                     'script' => $script,
                     'resource' => $resource,
@@ -629,14 +589,58 @@ if (!$row) {
                     'changelog' => $product['changelog'] ?? null,
                     'status' => $product['status'],
                     'license_valid' => false,
-                    'license_status' => 'dev_pending',
+                    'license_status' => $devStatus === 'denied' ? 'dev_denied' : 'dev_revoked',
                     'dev_mode' => true,
                     'dev_request_token' => $token,
-                    'message' => 'DEV request is waiting for Discord approval.',
                     'server_ip' => $serverIP,
                     'ip_lock' => false,
                 ]);
             }
+
+            $activeApproval = getActiveDevApproval($conn, $token, $serverIP, $resource);
+
+            if ($activeApproval) {
+                updateDevHeartbeat($conn, (int)$devRequest['id'], $heartbeat);
+
+                error_log("ScriptForge DEV request i.O.: {$serverIP} / {$resource} / {$script}");
+
+                respond([
+                    'script' => $script,
+                    'resource' => $resource,
+                    'version' => $product['latest_version'] ?? $version,
+                    'changelog' => $product['changelog'] ?? null,
+                    'status' => $product['status'],
+                    'license_valid' => true,
+                    'license_status' => 'dev_approved',
+                    'dev_mode' => true,
+                    'dev_request_token' => $token,
+                    'dev_approval_expires_at' => $activeApproval['expires_at'],
+                    'log_success' => false,
+                    'log_failed' => true,
+                    'webhook_url' => null,
+                    'server_ip' => $serverIP,
+                    'ip_lock' => false,
+                ]);
+            }
+
+            updateDevHeartbeat($conn, (int)$devRequest['id'], '');
+
+            error_log("ScriptForge DEV request pending: {$serverIP} / {$resource} / {$script}");
+
+            respond([
+                'script' => $script,
+                'resource' => $resource,
+                'version' => $product['latest_version'] ?? $version,
+                'changelog' => $product['changelog'] ?? null,
+                'status' => $product['status'],
+                'license_valid' => false,
+                'license_status' => 'dev_pending',
+                'dev_mode' => true,
+                'dev_request_token' => $token,
+                'message' => 'DEV request is waiting for Discord approval.',
+                'server_ip' => $serverIP,
+                'ip_lock' => false,
+            ]);
         }
     }
 
