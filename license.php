@@ -565,35 +565,34 @@ $licenseStmt->close();
 if (!$row) {
     $devServer = getActiveDevServer($conn, $serverIP);
     $allowDevFlow = $devMode || $devServer !== null;
+    $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
+
+    if (!$devRequest) {
+        $devRequest = createDevRequest(
+            $conn,
+            $serverIP,
+            $serverName !== '' ? $serverName : null,
+            $resource,
+            $script,
+            (int)$product['id'],
+            $license
+        );
+    }
 
     if ($allowDevFlow) {
-        $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
-
-        if (!$devRequest) {
-            $devRequest = createDevRequest(
-                $conn,
-                $serverIP,
-                $serverName !== '' ? $serverName : null,
-                $resource,
-                $script,
-                (int)$product['id'],
-                $license
+        if ($devRequest && !empty($product['webhook_url'])) {
+            sendWebhook(
+                (string)$product['webhook_url'],
+                'New ScriptForge DEV request',
+                "**Token:** " . ($devRequest['token'] ?? 'unknown') .
+                "\n**Product:** " . $script .
+                "\n**Resource:** " . $resource .
+                "\n**IP:** " . $serverIP .
+                "\n**Server:** " . ($serverName !== '' ? $serverName : 'Unknown') .
+                "\n\n**Status:** PENDING" .
+                "\n**Hint:** No matching license entry found.",
+                16753920
             );
-
-            if ($devRequest && !empty($product['webhook_url'])) {
-                sendWebhook(
-                    (string)$product['webhook_url'],
-                    'New ScriptForge DEV request',
-                    "**Token:** " . ($devRequest['token'] ?? 'unknown') .
-                    "\n**Product:** " . $script .
-                    "\n**Resource:** " . $resource .
-                    "\n**IP:** " . $serverIP .
-                    "\n**Server:** " . ($serverName !== '' ? $serverName : 'Unknown') .
-                    "\n\n**Status:** PENDING" .
-                    "\n**Hint:** No matching license entry found.",
-                    16753920
-                );
-            }
         }
 
         if ($devRequest) {
