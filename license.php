@@ -1,427 +1,106 @@
 <?php
 
 header('Content-Type: application/json; charset=utf-8');
-ini_set('display_errors', '0');
-error_reporting(E_ALL);
-mysqli_report(MYSQLI_REPORT_OFF);
-
-function respondJson(array $payload, int $code = 200): void
-{
-    if (!headers_sent()) {
-        http_response_code($code);
-        header('Content-Type: application/json; charset=utf-8');
-    }
-
-    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    exit;
-}
-
-set_exception_handler(function (Throwable $error) {
-    error_log('ScriptForge license exception: ' . $error->getMessage());
-
-    respondJson([
-        'error' => 'server_exception',
-        'message' => $error->getMessage()
-    ], 500);
-});
-
-set_error_handler(function ($severity, $message, $file, $line) {
-    if (!(error_reporting() & $severity)) {
-        return false;
-    }
-
-    throw new ErrorException($message, 0, $severity, $file, $line);
-});
-
-register_shutdown_function(function () {
-    $error = error_get_last();
-
-    if (!$error) {
-        return;
-    }
-
-    $fatalTypes = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR];
-
-    if (!in_array($error['type'], $fatalTypes, true)) {
-        return;
-    }
-
-    error_log('ScriptForge license fatal: ' . $error['message']);
-
-    if (!headers_sent()) {
-        http_response_code(500);
-        header('Content-Type: application/json; charset=utf-8');
-    }
-
-    echo json_encode([
-        'error' => 'fatal_error',
-        'message' => $error['message'],
-        'file' => basename($error['file'] ?? ''),
-        'line' => $error['line'] ?? null
-    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-});
-
-// ===============================
-// CONFIG
-// ===============================
 
 $dbHost = 'localhost';
 $dbUser = 'root';
 $dbPass = '';
 $dbName = 'scriptforge';
 
-$defaultWebhookUrl = 'https://discord.com/api/webhooks/1510409400722915520/eb2btoaOHn5I0qkuHo6YHh70kQEv_K2mCSKDkwdsVQPqY1vamzb_lWfoi2ycOUkXAMqU';
+$license = trim((string)($_GET['license'] ?? ''));
+$script = trim((string)($_GET['script'] ?? ''));
+$resource = trim((string)($_GET['resource'] ?? $script));
+$version = trim((string)($_GET['version'] ?? ''));
+$heartbeat = trim((string)($_GET['heartbeat'] ?? ''));
+$serverName = trim((string)($_GET['servername'] ?? ''));
+$serverIP = (string)($_SERVER['REMOTE_ADDR'] ?? '0.0.0.0');
 
-$placeholderKeys = [
-    'DEINE-LIZENZ',
-    'YOUR_LICENSE_KEY',
-    'PUT_IN_YOUR_TBX_KEY'
-];
-
-// ===============================
-// INPUT
-// ===============================
-
-$heartbeat = trim($_GET['heartbeat'] ?? '');
-$script = trim($_GET['script'] ?? '');
-$license = trim($_GET['license'] ?? '');
-$resource = trim($_GET['resource'] ?? $script);
-$clientVersion = trim($_GET['version'] ?? '');
-$serverIP = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
-$serverName = trim($_GET['servername'] ?? '');
-if ($serverName === '' || strtolower($serverName) === 'unknown server') {
-    $serverName = null;
-}
-
-if ($script === '') {
-    respondJson([
-        'error' => 'missing_parameters',
-        'message' => 'Missing script parameter.'
-    ], 400);
-}
-
-if ($resource === '') {
-    $resource = $script;
-}
-
-// ===============================
-// HELPERS
-// ===============================
-
-function isPlaceholderLicenseKey(string $license, array $placeholderKeys): bool
+function respond(array $payload): void
 {
-    return in_array(trim($license), $placeholderKeys, true);
+    http_response_code(200);
+    echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
 }
 
-function isAllowedDevServerIp(mysqli $conn, string $serverIP): bool
+function sendWebhook(string $url, string $title, string $message, int $color = 15158332): void
 {
-    $stmt = $conn->prepare("\n        SELECT 1\n        FROM scriptforge_dev_servers\n        WHERE server_ip = ?\n        AND active = 1\n        LIMIT 1\n    ");
-
-    if (!$stmt) {
-        error_log('ScriptForge DEV server lookup failed: ' . $conn->error);
-        return false;
-    }
-
-    $stmt->bind_param('s', $serverIP);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $allowed = $result && $result->num_rows > 0;
-    $stmt->close();
-
-    return $allowed;
-}
-
-function createDevRequestToken(): string
-{
-    return bin2hex(random_bytes(16));
-}
-
-function buildDevRequestComponents(string $token): array
-{
-    return [[
-        'type' => 1,
-        'components' => [
-            [
-                'type' => 2,
-                'style' => 3,
-                'label' => 'Freigeben',
-                'custom_id' => 'sfdev:approve:' . $token
-            ],
-            [
-                'type' => 2,
-                'style' => 4,
-                'label' => 'Ablehnen',
-                'custom_id' => 'sfdev:deny:' . $token
-            ]
-        ]
-    ]];
-}
-
-function sendDiscordWebhook(?string $webhookUrl, string $title, string $message, int $color = 16753920, ?array $components = null): void
-{
-    if (empty($webhookUrl)) {
+    if ($url === '') {
         return;
     }
 
-    $payload = [
+    $body = json_encode([
         'username' => 'ScriptForge Logs',
         'embeds' => [[
             'title' => $title,
             'description' => $message,
             'color' => $color,
-            'footer' => [
-                'text' => 'ScriptForge Verification'
-            ],
-            'timestamp' => gmdate('c')
-        ]]
-    ];
+            'footer' => ['text' => 'ScriptForge Verification'],
+            'timestamp' => gmdate('c'),
+        ]],
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
-    if (!empty($components)) {
-        $payload['components'] = $components;
-    }
-
-    $json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-
-    try {
-        if (function_exists('curl_init')) {
-            $ch = curl_init($webhookUrl);
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $json);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-            curl_exec($ch);
-            curl_close($ch);
-            return;
-        }
-
-        $context = stream_context_create([
-            'http' => [
-                'method' => 'POST',
-                'header' => "Content-Type: application/json\r\n",
-                'content' => $json,
-                'ignore_errors' => true,
-                'timeout' => 5
-            ]
-        ]);
-
-        @file_get_contents($webhookUrl, false, $context);
-    } catch (Throwable $error) {
-        error_log('ScriptForge webhook failed: ' . $error->getMessage());
-    }
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $body,
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 5,
+    ]);
+    curl_exec($ch);
+    curl_close($ch);
 }
 
-function getReusableDevRequest(mysqli $conn, string $serverIP, string $resource): ?array
+function isPlaceholderLicense(string $license): bool
 {
-    // Reuse only active request states so a fresh request can be created after expiry.
-    $stmt = $conn->prepare("\n        SELECT *\n        FROM scriptforge_dev_requests\n        WHERE server_ip = ?\n        AND resource_name = ?\n        AND status IN ('pending', 'approved', 'denied', 'revoked')\n        ORDER BY id DESC\n        LIMIT 1\n    ");
-
-    if (!$stmt) {
-        error_log('ScriptForge DEV reusable prepare failed: ' . $conn->error);
-        return null;
-    }
-
-    $stmt->bind_param('ss', $serverIP, $resource);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $request = $result ? $result->fetch_assoc() : null;
-    $stmt->close();
-
-    return $request ?: null;
+    return in_array($license, [
+        '',
+        'DEINE-LIZENZ',
+        'YOUR_LICENSE_KEY',
+        'PUT_IN_YOUR_TBX_KEY',
+    ], true);
 }
 
-function createDevRequest(
-    mysqli $conn,
-    string $serverIP,
-    ?string $serverName,
-    string $resource,
-    string $script,
-    string $clientVersion,
-    string $license,
-    string $reason
-): ?array {
-    $token = createDevRequestToken();
-
-    // DB schema: request_token, script_name, resource_name, license_key, server_name, server_ip, version, reason, status, created_at, last_check
-    $stmt = $conn->prepare("\n        INSERT INTO scriptforge_dev_requests\n        (\n            request_token,\n            script_name,\n            resource_name,\n            license_key,\n            server_name,\n            server_ip,\n            version,\n            reason,\n            status,\n            created_at,\n            last_check\n        )\n        VALUES\n        (\n            ?,\n            ?,\n            ?,\n            ?,\n            ?,\n            ?,\n            ?,\n            ?,\n            'pending',\n            NOW(),\n            NOW()\n        )\n    ");
-
-    if (!$stmt) {
-        respondJson([
-            'error' => 'dev_request_prepare_failed',
-            'message' => $conn->error
-        ], 500);
-    }
-
-    $stmt->bind_param(
-        'ssssssss',
-        $token,
-        $script,
-        $resource,
-        $license,
-        $serverName,
-        $serverIP,
-        $clientVersion,
-        $reason
-    );
-
-    if (!$stmt->execute()) {
-        $error = $stmt->error;
-        $stmt->close();
-
-        respondJson([
-            'error' => 'dev_request_insert_failed',
-            'message' => $error
-        ], 500);
-    }
-
-    $stmt->close();
-
-    return getReusableDevRequest($conn, $serverIP, $resource);
-}
-
-function updateDevHeartbeat(mysqli $conn, int $requestId): void
+function productResponse(array $product, string $serverIP, ?bool $licenseValid = null, ?string $licenseStatus = null, array $extra = []): array
 {
-    $stmt = $conn->prepare("\n        UPDATE scriptforge_dev_requests\n        SET last_check = NOW()\n        WHERE id = ?\n    ");
-
-    if (!$stmt) {
-        error_log('ScriptForge DEV heartbeat prepare failed: ' . $conn->error);
-        return;
-    }
-
-    $stmt->bind_param('i', $requestId);
-    $stmt->execute();
-    $stmt->close();
-}
-
-function expireOldDevRequests(mysqli $conn): void
-{
-    try {
-        $stmt = $conn->prepare("\n            UPDATE scriptforge_dev_requests\n            SET status = 'expired'\n            WHERE status = 'approved'\n            AND expires_at IS NOT NULL\n            AND expires_at <= NOW()\n        ");
-
-        if (!$stmt) {
-            error_log('ScriptForge DEV cleanup skipped: ' . $conn->error);
-            return;
-        }
-
-        $stmt->execute();
-        $stmt->close();
-    } catch (Throwable $error) {
-        error_log('ScriptForge DEV cleanup skipped: ' . $error->getMessage());
-    }
-}
-
-function isDevApproved(array $devRequest): bool
-{
-    if (($devRequest['status'] ?? '') !== 'approved') {
-        return false;
-    }
-
-    if (empty($devRequest['expires_at'])) {
-        return true;
-    }
-
-    return strtotime($devRequest['expires_at']) > time();
-}
-
-function respondDevRequest(array $devRequest, array $product, string $script, string $resource, string $serverIP): void
-{
-    $token = $devRequest['request_token'] ?? '';
-    $status = $devRequest['status'] ?? 'pending';
-
-    if ($status === 'denied' || $status === 'revoked') {
-        respondJson([
-            'script' => $script,
-            'resource' => $resource,
-            'version' => $product['latest_version'],
-            'changelog' => $product['changelog'],
-            'status' => $product['status'],
-            'license_valid' => false,
-            'license_status' => $status === 'denied' ? 'dev_denied' : 'dev_revoked',
-            'dev_mode' => true,
-            'dev_request_token' => $token,
-            'server_ip' => $serverIP,
-            'ip_lock' => false
-        ]);
-    }
-
-    if (isDevApproved($devRequest)) {
-        respondJson([
-            'script' => $script,
-            'resource' => $resource,
-            'version' => $product['latest_version'],
-            'changelog' => $product['changelog'],
-            'status' => $product['status'],
-            'license_valid' => true,
-            'license_status' => 'dev_approved',
-            'dev_mode' => true,
-            'dev_request_token' => $token,
-            'dev_approval_expires_at' => $devRequest['expires_at'] ?? null,
-            'log_success' => false,
-            'log_failed' => true,
-            'webhook_url' => null,
-            'server_ip' => $serverIP,
-            'ip_lock' => false
-        ]);
-    }
-
-    respondJson([
-        'script' => $script,
-        'resource' => $resource,
-        'version' => $product['latest_version'],
-        'changelog' => $product['changelog'],
-        'status' => $product['status'],
-        'license_valid' => false,
-        'license_status' => $status === 'expired' ? 'dev_expired' : 'dev_pending',
-        'dev_mode' => true,
-        'dev_request_token' => $token,
-        'message' => 'DEV request is waiting for Discord approval.',
+    return array_merge([
+        'status' => 'online',
+        'license_valid' => $licenseValid,
+        'license_status' => $licenseStatus,
+        'version' => $product['latest_version'] ?? null,
+        'changelog' => $product['changelog'] ?? null,
+        'log_success' => (bool)($product['log_success'] ?? false),
+        'log_failed' => (bool)($product['log_failed'] ?? true),
+        'webhook_url' => $product['webhook_url'] ?? null,
         'server_ip' => $serverIP,
-        'ip_lock' => false
+        'ip_lock' => (bool)($extra['ip_lock'] ?? false),
+    ], $extra);
+}
+
+if ($script === '' || $license === '') {
+    respond([
+        'status' => 'offline',
+        'license_valid' => false,
+        'error' => 'missing_parameters',
     ]);
 }
-
-// ===============================
-// DATABASE
-// ===============================
 
 $conn = new mysqli($dbHost, $dbUser, $dbPass, $dbName);
 
 if ($conn->connect_error) {
-    respondJson([
+    respond([
+        'status' => 'offline',
+        'license_valid' => false,
         'error' => 'database_connection_failed',
-        'message' => $conn->connect_error
-    ], 500);
+    ]);
 }
 
-$conn->set_charset('utf8mb4');
-
-expireOldDevRequests($conn);
-
-// ===============================
-// HEARTBEAT CLEANUP
-// ===============================
-
-$cleanupStmt = $conn->prepare("\n    UPDATE scriptforge_licenses\n    SET resource_status = 'inactive'\n    WHERE resource_status = 'active'\n    AND last_seen IS NOT NULL\n    AND last_seen < (NOW() - INTERVAL 5 MINUTE)\n");
-
-if ($cleanupStmt) {
-    $cleanupStmt->execute();
-    $cleanupStmt->close();
-} else {
-    error_log('ScriptForge license cleanup skipped: ' . $conn->error);
-}
-
-// ===============================
-// PRODUCT LOOKUP
-// ===============================
-
-$productStmt = $conn->prepare("\n    SELECT id, latest_version, changelog, status\n    FROM scriptforge_products\n    WHERE script_name = ?\n    LIMIT 1\n");
-
-if (!$productStmt) {
-    respondJson([
-        'error' => 'product_prepare_failed',
-        'message' => $conn->error
-    ], 500);
-}
+$productStmt = $conn->prepare(
+    'SELECT id, script_name, latest_version, changelog, status, webhook_url, log_success, log_failed
+     FROM scriptforge_products
+     WHERE script_name = ?
+     LIMIT 1'
+);
 
 $productStmt->bind_param('s', $script);
 $productStmt->execute();
@@ -430,111 +109,67 @@ $product = $productResult ? $productResult->fetch_assoc() : null;
 $productStmt->close();
 
 if (!$product) {
-    respondJson([
-        'error' => 'script_not_found',
-        'script' => $script
-    ], 404);
-}
-
-// ===============================
-// PLACEHOLDER KEY => DEV REQUEST
-// ===============================
-
-if (isPlaceholderLicenseKey($license, $placeholderKeys)) {
-    $devServerAllowed = isAllowedDevServerIp($conn, $serverIP);
-
-    if (!$devServerAllowed) {
-        respondJson([
-            'error' => 'missing_license',
-            'license_valid' => false,
-            'license_status' => 'missing_license',
-            'server_ip' => $serverIP
-        ], 403);
-    }
-
-    $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
-
-    if (!$devRequest) {
-        $devRequest = createDevRequest(
-            $conn,
-            $serverIP,
-            $serverName,
-            $resource,
-            $script,
-            $clientVersion,
-            $license,
-            'placeholder_key'
-        );
-
-        if ($devRequest) {
-            $token = $devRequest['request_token'] ?? '';
-
-            sendDiscordWebhook(
-                $defaultWebhookUrl,
-                'New DEV request',
-                '**Token:** ' . $token .
-                "\n**Produkt:** " . $script .
-                "\n**Resource:** " . $resource .
-                "\n**IP:** " . $serverIP .
-                "\n**Server:** " . ($serverName ?: 'Unbekannt') .
-                "\n\n**Status:** PENDING" .
-                "\n**Hinweis:** Standard key detected, DEV request created.",
-                16753920,
-                buildDevRequestComponents($token)
-            );
-        }
-    }
-
-    if ($devRequest) {
-        updateDevHeartbeat($conn, (int)$devRequest['id']);
-        respondDevRequest($devRequest, $product, $script, $resource, $serverIP);
-    }
-
-    respondJson([
-        'error' => 'dev_request_failed',
+    respond([
+        'status' => 'offline',
         'license_valid' => false,
-        'license_status' => 'dev_error',
-        'server_ip' => $serverIP
-    ], 500);
+        'error' => 'script_not_found',
+        'server_ip' => $serverIP,
+    ]);
 }
 
-// ===============================
-// NORMAL LICENSE LOOKUP
-// ===============================
+if (($product['status'] ?? 'online') !== 'online') {
+    if (!empty($product['log_failed']) && !empty($product['webhook_url'])) {
+        sendWebhook(
+            (string)$product['webhook_url'],
+            'ScriptForge verification failed',
+            "**Reason:** Product not online\n**Resource:** {$resource}\n**Version:** {$version}\n**IP:** {$serverIP}",
+            15158332
+        );
+    }
 
-$licenseStmt = $conn->prepare("\n    SELECT *\n    FROM scriptforge_licenses\n    WHERE license_key = ?\n    AND script_name = ?\n    AND resource_name = ?\n    LIMIT 1\n");
-
-if (!$licenseStmt) {
-    respondJson([
-        'error' => 'license_prepare_failed',
-        'message' => $conn->error
-    ], 500);
+    respond(array_merge(
+        productResponse($product, $serverIP, false, 'product_not_online'),
+        [
+            'status' => (string)$product['status'],
+            'error' => 'product_not_online',
+        ]
+    ));
 }
+
+$licenseStmt = $conn->prepare(
+    'SELECT *
+     FROM scriptforge_licenses
+     WHERE license_key = ?
+       AND script_name = ?
+       AND resource_name = ?
+     LIMIT 1'
+);
 
 $licenseStmt->bind_param('sss', $license, $script, $resource);
 $licenseStmt->execute();
 $licenseResult = $licenseStmt->get_result();
+$row = $licenseResult ? $licenseResult->fetch_assoc() : null;
+$licenseStmt->close();
 
-$licenseValid = false;
-$licenseData = null;
-
-// ===============================
-// LICENSE NOT FOUND
-// ===============================
-
-if ($licenseResult->num_rows === 0) {
-    $licenseStmt->close();
+if (!$row) {
+    if (isPlaceholderLicense($license)) {
+        respond(array_merge(
+            productResponse($product, $serverIP, false, 'invalid'),
+            [
+                'error' => 'placeholder_license',
+            ]
+        ));
+    }
 
     $pendingUntil = date('Y-m-d H:i:s', strtotime('+24 hours'));
+    $webhookUrl = (string)($product['webhook_url'] ?? '');
 
-    $insertStmt = $conn->prepare("\n        INSERT INTO scriptforge_licenses\n        (\n            license_key,\n            script_name,\n            resource_name,\n            status,\n            server_name,\n            server_ip,\n            last_ip,\n            first_check,\n            last_check,\n            total_checks,\n            pending_until,\n            webhook_url,\n            log_failed\n        )\n        VALUES\n        (\n            ?,\n            ?,\n            ?,\n            'pending',\n            ?,\n            ?,\n            ?,\n            NOW(),\n            NOW(),\n            1,\n            ?,\n            ?,\n            1\n        )\n    ");
-
-    if (!$insertStmt) {
-        respondJson([
-            'error' => 'license_insert_prepare_failed',
-            'message' => $conn->error
-        ], 500);
-    }
+    $insertStmt = $conn->prepare(
+        'INSERT INTO scriptforge_licenses
+         (license_key, script_name, resource_name, status, server_name, server_ip, last_ip, first_check, last_check, total_checks, pending_until, webhook_url, log_success, log_failed, ip_lock)
+         VALUES
+         (?, ?, ?, "pending", ?, ?, ?, NOW(), NOW(), 1, ?, ?, 0, 1, 0)'
+    );
 
     $insertStmt->bind_param(
         'ssssssss',
@@ -545,207 +180,291 @@ if ($licenseResult->num_rows === 0) {
         $serverIP,
         $serverIP,
         $pendingUntil,
-        $defaultWebhookUrl
+        $webhookUrl
     );
 
     if (!$insertStmt->execute()) {
-        $error = $insertStmt->error;
-        $insertStmt->close();
-
-        respondJson([
-            'error' => 'license_insert_failed',
-            'message' => $error
-        ], 500);
+        respond(array_merge(
+            productResponse($product, $serverIP, false, 'license_insert_failed'),
+            [
+                'error' => 'license_insert_failed',
+            ]
+        ));
     }
 
     $insertStmt->close();
 
-    sendDiscordWebhook(
-        $defaultWebhookUrl,
-        '⚠️ New license request',
-        '**Lizenz:** ' . $license .
-        "\n**Produkt:** " . $script .
-        "\n**Resource:** " . $resource .
-        "\n**IP:** " . $serverIP .
-        "\n**Server:** " . ($serverName ?: 'Unbekannt') .
-        "\n\n**Status:** PENDING" .
-        "\n**Valid until:** " . $pendingUntil,
-        16753920
-    );
+    if ($webhookUrl !== '') {
+        sendWebhook(
+            $webhookUrl,
+            'New ScriptForge license request',
+            "**License:** {$license}\n**Product:** {$script}\n**Resource:** {$resource}\n**IP:** {$serverIP}\n**Status:** PENDING\n**Valid until:** {$pendingUntil}",
+            16753920
+        );
+    }
 
-    respondJson([
-        'notice' => 'license_pending',
-        'message' => 'License not found. Temporary activation created.',
-        'script' => $script,
-        'resource' => $resource,
-        'version' => $product['latest_version'],
-        'changelog' => $product['changelog'],
-        'status' => $product['status'],
+    respond([
+        'status' => 'online',
         'license_valid' => true,
-        'license_status' => 'pending',
+        'notice' => 'license_pending',
+        'pending_allowed' => true,
         'pending_until' => $pendingUntil,
+        'version' => $product['latest_version'] ?? $version,
+        'changelog' => $product['changelog'] ?? null,
+        'log_success' => false,
+        'log_failed' => true,
+        'webhook_url' => $webhookUrl !== '' ? $webhookUrl : ($product['webhook_url'] ?? null),
         'server_ip' => $serverIP,
-        'ip_lock' => false
+        'ip_lock' => false,
     ]);
 }
 
-// ===============================
-// LICENSE FOUND
-// ===============================
+$updateStmt = $conn->prepare(
+    'UPDATE scriptforge_licenses
+     SET server_name = ?,
+         last_ip = ?,
+         last_check = NOW(),
+         total_checks = total_checks + 1
+     WHERE id = ?'
+);
 
-$licenseData = $licenseResult->fetch_assoc();
-$licenseStmt->close();
+$rowId = (int)$row['id'];
+$updateStmt->bind_param('ssi', $serverName, $serverIP, $rowId);
+$updateStmt->execute();
+$updateStmt->close();
 
-if (!$licenseData) {
-    respondJson([
-        'error' => 'license_fetch_failed',
-        'license_valid' => false,
-        'license_status' => 'invalid',
-        'server_ip' => $serverIP
-    ], 500);
+if (empty($row['first_check'])) {
+    $firstCheckStmt = $conn->prepare('UPDATE scriptforge_licenses SET first_check = NOW() WHERE id = ?');
+    $firstCheckStmt->bind_param('i', $rowId);
+    $firstCheckStmt->execute();
+    $firstCheckStmt->close();
 }
 
-if (empty($licenseData['first_check'])) {
-    $firstCheckStmt = $conn->prepare("\n        UPDATE scriptforge_licenses\n        SET first_check = NOW()\n        WHERE id = ?\n    ");
+if (empty($row['server_ip'])) {
+    $ipStmt = $conn->prepare('UPDATE scriptforge_licenses SET server_ip = ? WHERE id = ?');
+    $ipStmt->bind_param('si', $serverIP, $rowId);
+    $ipStmt->execute();
+    $ipStmt->close();
+    $row['server_ip'] = $serverIP;
+}
 
-    if ($firstCheckStmt) {
-        $firstCheckStmt->bind_param('i', $licenseData['id']);
-        $firstCheckStmt->execute();
-        $firstCheckStmt->close();
-        $licenseData['first_check'] = date('Y-m-d H:i:s');
+$currentStatus = (string)($row['status'] ?? 'inactive');
+$webhookUrl = (string)($row['webhook_url'] ?? ($product['webhook_url'] ?? ''));
+$logSuccess = (bool)($row['log_success'] ?? $product['log_success'] ?? false);
+$logFailed = (bool)($row['log_failed'] ?? $product['log_failed'] ?? true);
+$ipLock = (int)($row['ip_lock'] ?? 0) === 1;
+$expectedIP = (string)($row['server_ip'] ?? '');
+
+if ($ipLock && $expectedIP !== '' && $expectedIP !== $serverIP) {
+    if ($logFailed && $webhookUrl !== '') {
+        sendWebhook(
+            $webhookUrl,
+            'ScriptForge IP lock triggered',
+            "**Server:** {$serverName}\n**Current IP:** {$serverIP}\n**Expected IP:** {$expectedIP}\n**Product:** {$script}\n**Version:** {$version}\n**Status:** IP_MISMATCH",
+            15158332
+        );
     }
+
+    respond(productResponse(
+        $product,
+        $serverIP,
+        false,
+        'ip_mismatch',
+        [
+            'error' => 'ip_mismatch',
+            'expected_ip' => $expectedIP,
+            'current_ip' => $serverIP,
+            'pending_allowed' => false,
+            'webhook_url' => $webhookUrl,
+            'log_success' => $logSuccess,
+            'log_failed' => $logFailed,
+            'ip_lock' => true,
+        ]
+    ));
 }
 
-if (empty($licenseData['server_ip'])) {
-    $ipStmt = $conn->prepare("\n        UPDATE scriptforge_licenses\n        SET server_ip = ?\n        WHERE id = ?\n    ");
+if ($heartbeat === 'active' || $heartbeat === 'heartbeat') {
+    $hbStmt = $conn->prepare(
+        'UPDATE scriptforge_licenses
+         SET resource_status = "active",
+             started_at = IF(started_at IS NULL OR resource_status = "inactive", NOW(), started_at),
+             last_seen = NOW()
+         WHERE id = ?'
+    );
+    $hbStmt->bind_param('i', $rowId);
+    $hbStmt->execute();
+    $hbStmt->close();
+} elseif ($heartbeat === 'inactive') {
+    $hbStmt = $conn->prepare(
+        'UPDATE scriptforge_licenses
+         SET resource_status = "inactive"
+         WHERE id = ?'
+    );
+    $hbStmt->bind_param('i', $rowId);
+    $hbStmt->execute();
+    $hbStmt->close();
+}
 
-    if ($ipStmt) {
-        $ipStmt->bind_param('si', $serverIP, $licenseData['id']);
-        $ipStmt->execute();
-        $ipStmt->close();
-        $licenseData['server_ip'] = $serverIP;
+if ($currentStatus === 'pending') {
+    $pendingUntil = (string)($row['pending_until'] ?? '');
+    $pendingAllowed = $pendingUntil !== '' && strtotime($pendingUntil) > time();
+
+    if (!$pendingAllowed) {
+        if ($logFailed && $webhookUrl !== '') {
+            sendWebhook(
+                $webhookUrl,
+                'ScriptForge pending expired',
+                "**Server:** {$serverName}\n**IP:** {$serverIP}\n**Product:** {$script}\n**Version:** {$version}\n**Status:** PENDING_EXPIRED",
+                15158332
+            );
+        }
+
+        respond(productResponse(
+            $product,
+            $serverIP,
+            false,
+            'license_pending',
+            [
+                'notice' => 'license_pending',
+                'pending_allowed' => false,
+                'pending_until' => $pendingUntil !== '' ? $pendingUntil : null,
+                'error' => 'license_pending_expired',
+                'webhook_url' => $webhookUrl,
+                'log_success' => $logSuccess,
+                'log_failed' => $logFailed,
+                'ip_lock' => $ipLock,
+            ]
+        ));
     }
-}
 
-$checkStmt = $conn->prepare("\n    UPDATE scriptforge_licenses\n    SET\n        server_name = ?,\n        last_ip = ?,\n        last_check = NOW(),\n        total_checks = total_checks + 1\n    WHERE id = ?\n");
+    if ($logSuccess && $webhookUrl !== '') {
+        sendWebhook(
+            $webhookUrl,
+            'ScriptForge pending valid',
+            "**Server:** {$serverName}\n**IP:** {$serverIP}\n**Product:** {$script}\n**Version:** {$version}\n**Status:** PENDING_ACTIVE",
+            3066993
+        );
+    }
 
-if ($checkStmt) {
-    $checkStmt->bind_param('ssi', $serverName, $serverIP, $licenseData['id']);
-    $checkStmt->execute();
-    $checkStmt->close();
-}
-
-// IP lock
-if (
-    isset($licenseData['ip_lock']) &&
-    (int)$licenseData['ip_lock'] === 1 &&
-    !empty($licenseData['server_ip']) &&
-    $licenseData['server_ip'] !== $serverIP
-) {
-    respondJson([
-        'error' => 'ip_mismatch',
-        'license_valid' => false,
-        'license_status' => 'ip_mismatch',
-        'log_failed' => (bool)($licenseData['log_failed'] ?? true),
-        'webhook_url' => $licenseData['webhook_url'] ?? null,
-        'expected_ip' => $licenseData['server_ip'],
-        'current_ip' => $serverIP,
+    respond([
+        'status' => 'online',
+        'license_valid' => true,
+        'notice' => 'license_pending',
+        'pending_allowed' => true,
+        'pending_until' => $pendingUntil,
+        'version' => $product['latest_version'] ?? $version,
+        'changelog' => $product['changelog'] ?? null,
+        'log_success' => $logSuccess,
+        'log_failed' => $logFailed,
+        'webhook_url' => $webhookUrl,
         'server_ip' => $serverIP,
-        'ip_lock' => true
+        'ip_lock' => $ipLock,
     ]);
 }
 
-// Heartbeat processing for active + pending + trial
-if (in_array($licenseData['status'], ['active', 'pending', 'trial'], true)) {
-    if ($heartbeat === 'active') {
-        $stmt = $conn->prepare("\n            UPDATE scriptforge_licenses\n            SET\n                resource_status = 'active',\n                started_at = IF(started_at IS NULL OR resource_status = 'inactive', NOW(), started_at),\n                last_seen = NOW()\n            WHERE id = ?\n        ");
-    } elseif ($heartbeat === 'heartbeat') {
-        $stmt = $conn->prepare("\n            UPDATE scriptforge_licenses\n            SET\n                resource_status = 'active',\n                last_seen = NOW()\n            WHERE id = ?\n        ");
-    } elseif ($heartbeat === 'inactive') {
-        $stmt = $conn->prepare("\n            UPDATE scriptforge_licenses\n            SET resource_status = 'inactive'\n            WHERE id = ?\n        ");
-    } else {
-        $stmt = null;
-    }
+if ($currentStatus === 'trial') {
+    $expiresAt = (string)($row['expires_at'] ?? '');
 
-    if ($stmt) {
-        $stmt->bind_param('i', $licenseData['id']);
-        $stmt->execute();
-        $stmt->close();
-    }
-}
-
-// License status
-if ($licenseData['status'] === 'active') {
-    $licenseValid = true;
-}
-
-if ($licenseData['status'] === 'pending') {
-    if (empty($licenseData['pending_until']) || strtotime($licenseData['pending_until']) <= time()) {
-        $expireStmt = $conn->prepare("\n            UPDATE scriptforge_licenses\n            SET\n                status = 'inactive',\n                resource_status = 'inactive'\n            WHERE id = ?\n        ");
-
-        if ($expireStmt) {
-            $expireStmt->bind_param('i', $licenseData['id']);
-            $expireStmt->execute();
-            $expireStmt->close();
+    if ($expiresAt !== '' && strtotime($expiresAt) > time()) {
+        if ($logSuccess && $webhookUrl !== '') {
+            sendWebhook(
+                $webhookUrl,
+                'ScriptForge trial valid',
+                "**Server:** {$serverName}\n**IP:** {$serverIP}\n**Product:** {$script}\n**Version:** {$version}\n**Status:** TRIAL_ACTIVE",
+                3066993
+            );
         }
 
-        sendDiscordWebhook(
-            !empty($licenseData['webhook_url']) ? $licenseData['webhook_url'] : $defaultWebhookUrl,
-            '⏰ Pending license expired',
-            '**Lizenz:** ' . $license .
-            "\n**Produkt:** " . $script .
-            "\n**Resource:** " . ($licenseData['resource_name'] ?? $resource) .
-            "\n**IP:** " . $serverIP .
-            "\n\n**Status:** INACTIVE" .
-            "\n**Grund:** Pending-Zeit abgelaufen",
+        respond([
+            'status' => 'online',
+            'license_valid' => true,
+            'version' => $product['latest_version'] ?? $version,
+            'changelog' => $product['changelog'] ?? null,
+            'log_success' => $logSuccess,
+            'log_failed' => $logFailed,
+            'webhook_url' => $webhookUrl,
+            'server_ip' => $serverIP,
+            'ip_lock' => $ipLock,
+        ]);
+    }
+
+    $expireTrialStmt = $conn->prepare(
+        'UPDATE scriptforge_licenses
+         SET status = "expired",
+             resource_status = "inactive"
+         WHERE id = ?'
+    );
+    $expireTrialStmt->bind_param('i', $rowId);
+    $expireTrialStmt->execute();
+    $expireTrialStmt->close();
+
+    if ($logFailed && $webhookUrl !== '') {
+        sendWebhook(
+            $webhookUrl,
+            'ScriptForge trial expired',
+            "**Server:** {$serverName}\n**IP:** {$serverIP}\n**Product:** {$script}\n**Version:** {$version}\n**Status:** EXPIRED",
             15158332
         );
-
-        $licenseData['status'] = 'inactive';
-    } else {
-        $licenseValid = true;
     }
+
+    respond(productResponse(
+        $product,
+        $serverIP,
+        false,
+        'expired',
+        [
+            'error' => 'license_expired',
+            'webhook_url' => $webhookUrl,
+            'log_success' => $logSuccess,
+            'log_failed' => $logFailed,
+            'ip_lock' => $ipLock,
+        ]
+    ));
 }
 
-if ($licenseData['status'] === 'trial') {
-    if (!empty($licenseData['expires_at']) && strtotime($licenseData['expires_at']) > time()) {
-        $licenseValid = true;
-    } else {
-        $expireTrialStmt = $conn->prepare("\n            UPDATE scriptforge_licenses\n            SET\n                status = 'expired',\n                resource_status = 'inactive'\n            WHERE id = ?\n        ");
-
-        if ($expireTrialStmt) {
-            $expireTrialStmt->bind_param('i', $licenseData['id']);
-            $expireTrialStmt->execute();
-            $expireTrialStmt->close();
-        }
-
-        sendDiscordWebhook(
-            !empty($licenseData['webhook_url']) ? $licenseData['webhook_url'] : $defaultWebhookUrl,
-            '⏰ Trial license expired',
-            '**Lizenz:** ' . $license .
-            "\n**Produkt:** " . $script .
-            "\n**Resource:** " . ($licenseData['resource_name'] ?? $resource) .
-            "\n**IP:** " . $serverIP .
-            "\n\n**Status:** EXPIRED" .
-            "\n**Grund:** Trial-Zeit abgelaufen",
+if ($currentStatus !== 'active') {
+    if ($logFailed && $webhookUrl !== '') {
+        sendWebhook(
+            $webhookUrl,
+            'ScriptForge license invalid',
+            "**Server:** {$serverName}\n**IP:** {$serverIP}\n**Product:** {$script}\n**Version:** {$version}\n**Status:** {$currentStatus}",
             15158332
         );
-
-        $licenseData['status'] = 'expired';
     }
+
+    respond(productResponse(
+        $product,
+        $serverIP,
+        false,
+        'license_invalid',
+        [
+            'error' => 'license_invalid',
+            'webhook_url' => $webhookUrl,
+            'log_success' => $logSuccess,
+            'log_failed' => $logFailed,
+            'ip_lock' => $ipLock,
+        ]
+    ));
 }
 
-respondJson([
-    'script' => $script,
-    'resource' => $resource,
-    'version' => $product['latest_version'],
-    'changelog' => $product['changelog'],
-    'status' => $product['status'],
-    'license_valid' => $licenseValid,
-    'license_status' => $licenseData['status'] ?? null,
-    'log_success' => (bool)($licenseData['log_success'] ?? false),
-    'log_failed' => (bool)($licenseData['log_failed'] ?? true),
-    'webhook_url' => $licenseData['webhook_url'] ?? null,
+if ($logSuccess && $webhookUrl !== '') {
+    sendWebhook(
+        $webhookUrl,
+        'ScriptForge license successful',
+        "**Server:** {$serverName}\n**IP:** {$serverIP}\n**Product:** {$script}\n**Version:** {$version}\n**Status:** ACTIVE",
+        3066993
+    );
+}
+
+respond([
+    'status' => 'online',
+    'license_valid' => true,
+    'version' => $product['latest_version'] ?? $version,
+    'changelog' => $product['changelog'] ?? null,
+    'log_success' => $logSuccess,
+    'log_failed' => $logFailed,
+    'webhook_url' => $webhookUrl,
     'server_ip' => $serverIP,
-    'ip_lock' => (bool)($licenseData['ip_lock'] ?? false)
+    'ip_lock' => $ipLock,
 ]);
+
