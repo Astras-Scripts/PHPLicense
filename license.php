@@ -8,7 +8,7 @@ mysqli_report(MYSQLI_REPORT_OFF);
 function respondJson(array $payload, int $code = 200): void
 {
     if (!headers_sent()) {
-        http_response_code($code);
+        http_response_code(200);
         header('Content-Type: application/json; charset=utf-8');
     }
 
@@ -37,7 +37,7 @@ set_exception_handler(function (Throwable $error) {
     respondJson([
         'error' => 'server_exception',
         'message' => $error->getMessage()
-    ], 500);
+    ], 200);
 });
 
 set_error_handler(function ($severity, $message, $file, $line) {
@@ -64,7 +64,7 @@ register_shutdown_function(function () {
     error_log('ScriptForge license fatal: ' . $error['message']);
 
     if (!headers_sent()) {
-        http_response_code(500);
+        http_response_code(200);
         header('Content-Type: application/json; charset=utf-8');
     }
 
