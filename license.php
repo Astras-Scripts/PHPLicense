@@ -401,7 +401,7 @@ function getReusableDevRequest(mysqli $conn, string $serverIP, string $resource)
     $selectSql = buildDevRequestSelectSql($conn) .
         ' WHERE server_ip = ?
            AND resource_name = ?
-           AND status IN ("pending", "dev_pending", "approved", "denied", "revoked")
+           AND status IN ("pending", "dev_pending")
          ORDER BY id DESC
          LIMIT 1';
 
