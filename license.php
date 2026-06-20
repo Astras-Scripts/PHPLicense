@@ -853,6 +853,7 @@ $licenseStmt = $conn->prepare(
      WHERE license_key = ?
        AND script_name = ?
        AND resource_name = ?
+     ORDER BY id DESC
      LIMIT 1'
 );
 
