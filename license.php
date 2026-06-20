@@ -92,8 +92,6 @@ $version = trim((string)($_GET['version'] ?? ''));
 $heartbeat = trim((string)($_GET['heartbeat'] ?? ''));
 $serverName = trim((string)($_GET['servername'] ?? ''));
 $serverIP = (string)($_SERVER['REMOTE_ADDR'] ?? '0.0.0.0');
-$devModeValue = strtolower(trim((string)($_GET['devmode'] ?? $_GET['dev_mode'] ?? '')));
-$devMode = in_array($devModeValue, ['1', 'true', 'yes', 'on'], true);
 $defaultWebhookUrl = 'https://discord.com/api/webhooks/1510409400722915520/eb2btoaOHn5I0qkuHo6YHh70kQEv_K2mCSKDkwdsVQPqY1vamzb_lWfoi2ycOUkXAMqU';
 
 function respond(array $payload): void
@@ -671,6 +669,42 @@ function expireOldDevApprovals(mysqli $conn): void
     }
 }
 
+function cleanupExpiredDevRequests(mysqli $conn): void
+{
+    try {
+        $columns = getTableColumns($conn, 'scriptforge_dev_requests');
+        $statusColumn = isset($columns['status']) ? 'status' : null;
+        $expiresColumn = isset($columns['expires_at']) ? 'expires_at' : null;
+        $requestedColumn = isset($columns['requested_at']) ? 'requested_at' : (isset($columns['created_at']) ? 'created_at' : null);
+
+        if ($statusColumn === null || $requestedColumn === null) {
+            return;
+        }
+
+        $conditions = [
+            $statusColumn . ' IN ("pending", "dev_pending")'
+        ];
+
+        if ($expiresColumn !== null) {
+            $conditions[] = '(' . $expiresColumn . ' IS NOT NULL AND ' . $expiresColumn . ' <= NOW())';
+        } else {
+            $conditions[] = '(' . $requestedColumn . ' IS NOT NULL AND ' . $requestedColumn . ' <= DATE_SUB(NOW(), INTERVAL 24 HOUR))';
+        }
+
+        $stmt = $conn->prepare(
+            'DELETE FROM scriptforge_dev_requests
+             WHERE ' . implode(' AND ', $conditions)
+        );
+
+        if ($stmt) {
+            $stmt->execute();
+            $stmt->close();
+        }
+    } catch (Throwable $error) {
+        error_log('ScriptForge DEV request cleanup skipped: ' . $error->getMessage());
+    }
+}
+
 function updateDevHeartbeat(mysqli $conn, int $requestId, string $heartbeat): void
 {
     $schema = getDevRequestSchema($conn);
@@ -756,6 +790,9 @@ if ($conn->connect_error) {
     ]);
 }
 
+expireOldDevApprovals($conn);
+cleanupExpiredDevRequests($conn);
+
 $productStmt = $conn->prepare(
     'SELECT *
      FROM scriptforge_products
@@ -828,7 +865,7 @@ $licenseStmt->close();
 if (!$row) {
     $devServer = getActiveDevServer($conn, $serverIP);
     $isPlaceholder = isPlaceholderLicense($license);
-    $allowDevFlow = $devMode || $devServer !== null;
+    $allowDevFlow = $isPlaceholder && $devServer !== null;
     $devRequest = getReusableDevRequest($conn, $serverIP, $resource);
     $devRequestWasCreated = false;
 
@@ -1177,6 +1214,13 @@ if ($currentStatus === 'pending') {
     $pendingAllowed = $pendingUntil !== '' && strtotime($pendingUntil) > time();
 
     if (!$pendingAllowed) {
+        $deleteStmt = $conn->prepare('DELETE FROM scriptforge_licenses WHERE id = ?');
+        if ($deleteStmt) {
+            $deleteStmt->bind_param('i', $rowId);
+            $deleteStmt->execute();
+            $deleteStmt->close();
+        }
+
         if ($logFailed && $webhookUrl !== '') {
             sendWebhook(
                 $webhookUrl,
